@@ -15,6 +15,7 @@
     "test-mcp": "tsx src/test-mcp-tools.ts",
     "demo": "tsx src/demo-agent.ts",
     "test-dispute": "tsx src/test-dispute.ts",
+    "test-skill": "tsx src/test-skill-market.ts",
     "enforcement": "tsx src/cron-enforcement.ts",
     "pwa": "tsx src/pwa/server.ts"
   },

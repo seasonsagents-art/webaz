@@ -63,6 +63,7 @@ async function render(page, params) {
     case 'seller':        return renderSeller(app)
     case 'wallet':        return renderWallet(app)
     case 'notifications': return renderNotifications(app)
+    case 'skills':        return renderSkills(app)
     case 'login':         return renderLogin()
     default:              return renderShop(app)
   }
@@ -237,6 +238,9 @@ async function renderShop(app) {
     <div class="search-bar">
       <input class="search-input" id="search-inp" placeholder="搜索商品..." onkeydown="if(event.key==='Enter')doSearch()">
       <button class="btn btn-primary btn-sm" style="width:auto;padding:10px 16px" onclick="doSearch()">搜</button>
+    </div>
+    <div style="margin-bottom:16px">
+      <button class="btn btn-outline btn-sm" style="width:auto" onclick="navigate('#skills')">⚡ Skill 市场</button>
     </div>
     <div id="product-list">${grid}</div>
   `, 'shop')
@@ -473,7 +477,8 @@ async function renderSeller(app) {
   }
 
   app.innerHTML = shell(loading$(), 'seller')
-  const [products, orders] = await Promise.all([GET('/my-products'), GET('/orders')])
+  const [products, orders, mySkillsRaw] = await Promise.all([GET('/my-products'), GET('/orders'), GET('/skills/mine')])
+  const mySkills = Array.isArray(mySkillsRaw) ? mySkillsRaw : []
 
   const pendingOrders = orders.filter(o => ['paid', 'accepted'].includes(o.status) && o.seller_id === state.user.id)
   const myProducts = products
@@ -547,6 +552,38 @@ async function renderSeller(app) {
         </div>
       </div>
     </div>
+
+    <div class="divider"></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div style="font-weight:700">⚡ 我的 Skill</div>
+      <button class="btn btn-outline btn-sm" onclick="navigate('#skills')">Skill 市场</button>
+    </div>
+    <div id="my-skills-list">${mySkills.length > 0 ? mySkills.map(s => skillCard(s, 'seller')).join('') : `<div class="empty" style="padding:24px"><div class="empty-icon">⚡</div><div class="empty-text">还没有 Skill</div></div>`}</div>
+    <button class="btn btn-outline" style="margin-top:12px" onclick="showPublishSkill()">+ 发布新 Skill</button>
+
+    <div id="publish-skill-form" style="display:none">
+      <div class="divider"></div>
+      <div class="card">
+        <div style="font-weight:700;margin-bottom:16px">发布 Skill</div>
+        <div id="skill-msg"></div>
+        <div class="form-group"><label class="form-label">Skill 类型</label>
+          <select class="form-control" id="skl-type" onchange="updateSkillConfigHint()">
+            <option value="catalog_sync">🔄 目录同步 — 商品接入 DCP 搜索</option>
+            <option value="auto_accept">⚡ 自动接单 — 买家下单立即接受</option>
+            <option value="price_negotiation">🤝 价格协商 — 允许 Agent 议价</option>
+            <option value="quality_guarantee">🛡️ 质量承诺 — 额外质押保证</option>
+            <option value="instant_ship">🚀 极速发货 — 承诺 24h 发货</option>
+          </select>
+        </div>
+        <div class="form-group"><label class="form-label">Skill 名称</label><input class="form-control" id="skl-name" placeholder="例：竹韵手工坊自动接单"></div>
+        <div class="form-group"><label class="form-label">描述</label><textarea class="form-control" id="skl-desc" placeholder="简要说明这个 Skill 能给买家带来什么好处"></textarea></div>
+        <div id="skl-config-hint" class="alert alert-info" style="font-size:13px;margin-bottom:16px">目录同步：将你的商品列入 DCP 搜索优先级，买家订阅后可优先发现你的商品。推荐佣金 0.5% 由协议自动分配。</div>
+        <div class="btn-row">
+          <button class="btn btn-gray" onclick="hidePublishSkill()">取消</button>
+          <button class="btn btn-primary" onclick="doPublishSkill()">发布</button>
+        </div>
+      </div>
+    </div>
   `, 'seller')
 }
 
@@ -567,6 +604,71 @@ window.doAddProduct = async () => {
   if (res.error) { msgEl.innerHTML = alert$('error', res.error); return }
 
   msgEl.innerHTML = alert$('success', `上架成功！质押 ${res.stake_locked} DCP 已锁定`)
+  setTimeout(() => renderSeller(document.getElementById('app')), 1500)
+}
+
+// ─── 卖家 Skill 管理 ──────────────────────────────────────────
+
+function skillCard(s, context) {
+  const typeIcons = { catalog_sync:'🔄', auto_accept:'⚡', price_negotiation:'🤝', quality_guarantee:'🛡️', instant_ship:'🚀' }
+  const typeLabels = { catalog_sync:'目录同步', auto_accept:'自动接单', price_negotiation:'价格协商', quality_guarantee:'质量承诺', instant_ship:'极速发货' }
+  const icon = typeIcons[s.skill_type] || '⚙️'
+  const label = typeLabels[s.skill_type] || s.skill_type
+  if (context === 'seller') {
+    return `
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600">${icon} ${s.name}</div>
+            <div style="font-size:12px;color:#6b7280;margin-top:2px">${label} · ${s.subscriber_count || 0} 订阅 · 使用 ${s.total_uses} 次</div>
+          </div>
+          <span class="badge badge-green">运行中</span>
+        </div>
+        <div style="font-size:13px;color:#6b7280;margin-top:8px">${s.description}</div>
+      </div>`
+  }
+  // buyer context
+  const subscribed = Boolean(s.subscribed)
+  return `
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600">${icon} ${s.name}</div>
+          <div style="font-size:12px;color:#6b7280;margin-top:2px">${label} · @${s.seller_name} · ${s.subscriber_count || 0} 订阅</div>
+        </div>
+        <button class="btn ${subscribed ? 'btn-gray' : 'btn-primary'} btn-sm" style="flex-shrink:0;margin-left:8px"
+          onclick="toggleSubscribeSkill('${s.id}', ${subscribed})">${subscribed ? '已订阅' : '+ 订阅'}</button>
+      </div>
+      <div style="font-size:13px;color:#6b7280;margin-top:8px">${s.description}</div>
+    </div>`
+}
+
+const SKILL_CONFIG_HINTS = {
+  catalog_sync:      '目录同步：订阅此 Skill 的买家在搜索时会优先看到你的商品。成交后协议自动给你 0.5% 推荐佣金。',
+  auto_accept:       '自动接单：买家下单后无需手动操作，系统自动接受。可设置每日上限、金额范围。',
+  price_negotiation: '价格协商：允许买家 Agent 在你设定的折扣范围内自动议价，减少沟通成本。',
+  quality_guarantee: '质量承诺：额外质押 DCP 作为品质担保，增强买家信任，适合高客单价商品。',
+  instant_ship:      '极速发货：承诺接单后 24h 内发货，违约自动赔付。适合有充足现货的卖家。',
+}
+
+window.updateSkillConfigHint = () => {
+  const type = document.getElementById('skl-type').value
+  const hint = document.getElementById('skl-config-hint')
+  if (hint) hint.textContent = SKILL_CONFIG_HINTS[type] || ''
+}
+
+window.showPublishSkill = () => { document.getElementById('publish-skill-form').style.display = '' }
+window.hidePublishSkill = () => { document.getElementById('publish-skill-form').style.display = 'none' }
+
+window.doPublishSkill = async () => {
+  const skill_type = document.getElementById('skl-type').value
+  const name = document.getElementById('skl-name').value.trim()
+  const description = document.getElementById('skl-desc').value.trim()
+  const msgEl = document.getElementById('skill-msg')
+  if (!name || !description) { msgEl.innerHTML = alert$('error', '请填写名称和描述'); return }
+  const res = await POST('/skills', { skill_type, name, description })
+  if (res.error) { msgEl.innerHTML = alert$('error', res.error); return }
+  msgEl.innerHTML = alert$('success', '✅ Skill 已发布！买家可以在 Skill 市场订阅')
   setTimeout(() => renderSeller(document.getElementById('app')), 1500)
 }
 
@@ -695,6 +797,65 @@ async function renderNotifications(app) {
       </div>`).join('')
 
   app.innerHTML = shell(`<h1 class="page-title">通知</h1>${html}`, 'notifications')
+}
+
+// ─── Skill 市场页 ─────────────────────────────────────────────
+
+async function renderSkills(app) {
+  app.innerHTML = shell(loading$(), 'shop')
+
+  const skills = await GET('/skills')
+  const isBuyer = state.user?.role === 'buyer'
+
+  const typeIcons = { catalog_sync:'🔄', auto_accept:'⚡', price_negotiation:'🤝', quality_guarantee:'🛡️', instant_ship:'🚀' }
+  const typeLabels = { catalog_sync:'目录同步', auto_accept:'自动接单', price_negotiation:'价格协商', quality_guarantee:'质量承诺', instant_ship:'极速发货' }
+
+  const groups = {}
+  for (const s of skills) {
+    if (!groups[s.skill_type]) groups[s.skill_type] = []
+    groups[s.skill_type].push(s)
+  }
+
+  let html = ''
+  if (skills.length === 0) {
+    html = `<div class="empty"><div class="empty-icon">⚡</div><div class="empty-text">还没有 Skill，卖家可以去后台发布</div></div>`
+  } else {
+    for (const [type, items] of Object.entries(groups)) {
+      const icon = typeIcons[type] || '⚙️'
+      const label = typeLabels[type] || type
+      html += `<div style="font-weight:700;margin:16px 0 8px">${icon} ${label}</div>`
+      html += items.map(s => skillCard(s, 'buyer')).join('')
+    }
+  }
+
+  app.innerHTML = shell(`
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <button class="btn btn-gray btn-sm" style="width:auto" onclick="history.back()">←</button>
+      <h1 class="page-title" style="margin:0">⚡ Skill 市场</h1>
+    </div>
+    ${isBuyer ? `
+    <div class="alert alert-info" style="font-size:13px">
+      订阅卖家发布的 Skill，即可享受自动接单、优先推荐、价格协商等特权。
+    </div>` : !state.user ? `
+    <div class="alert alert-info" style="font-size:13px">
+      <a href="#login" style="color:inherit;font-weight:700">登录</a>后即可订阅 Skill
+    </div>` : ''}
+    <div id="skill-sub-msg"></div>
+    ${html}
+  `, 'shop')
+}
+
+window.toggleSubscribeSkill = async (skillId, currentlySubscribed) => {
+  const msgEl = document.getElementById('skill-sub-msg')
+  if (currentlySubscribed) {
+    await fetch(`/api/skills/${skillId}/subscribe`, { method: 'DELETE', headers: { Authorization: `Bearer ${state.apiKey}` } })
+    msgEl.innerHTML = alert$('info', '已取消订阅')
+  } else {
+    const res = await POST(`/skills/${skillId}/subscribe`, {})
+    if (res.error) { msgEl.innerHTML = alert$('error', res.error); return }
+    msgEl.innerHTML = alert$('success', '✅ 订阅成功！你将优先看到此卖家商品')
+  }
+  setTimeout(() => renderSkills(document.getElementById('app')), 800)
 }
 
 // ─── 启动 ─────────────────────────────────────────────────────

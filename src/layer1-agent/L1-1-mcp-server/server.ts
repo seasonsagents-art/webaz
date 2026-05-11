@@ -43,6 +43,18 @@ import {
   getUnreadCount,
   markRead,
 } from '../../layer2-business/L2-6-notifications/notification-engine.js'
+import {
+  initSkillSchema,
+  publishSkill,
+  listSkills,
+  getMySkills,
+  subscribeSkill,
+  unsubscribeSkill,
+  getMySubscriptions,
+  formatSkillForAgent,
+  SKILL_TYPE_META,
+  type SkillType,
+} from '../../layer4-economics/L4-4-skill-market/skill-engine.js'
 import { requireAuth } from './auth.js'
 
 // ─── 初始化 ──────────────────────────────────────────────────
@@ -51,6 +63,7 @@ const db: Database.Database = initDatabase()
 initSystemUser(db)
 initDisputeSchema(db)
 initNotificationSchema(db)
+initSkillSchema(db)
 
 // ─── 工具定义（Agent 读这些来理解如何使用协议）────────────────
 
@@ -273,6 +286,57 @@ ruling 裁定选项（arbitrate 时使用）：
         ruling_reason: { type: 'string', description: '裁定理由（arbitrate 时必填，将永久记录在链上）' },
       },
       required: ['api_key', 'action'],
+    },
+  },
+  {
+    name: 'dcp_skill',
+    description: `L4-4 Skill 市场——让卖家发布可复用的 Agent 能力插件，买家 Agent 一键订阅。
+
+Skill 是解决冷启动的核心机制：现有 Amazon/Shopify 卖家零成本接入 DCP，
+买家 Agent 订阅后可自动发现、优先呈现这些卖家的商品，成交后 Skill 发布者获得推荐佣金。
+
+Skill 类型（skill_type）：
+- catalog_sync      目录同步：将外部店铺（Amazon/Shopify/自定义）接入 DCP 搜索，买家订阅后优先看到
+- auto_accept       自动接单：买家下单后立即接受，无需等待（config: min_amount, max_amount, max_daily_orders）
+- price_negotiation 价格协商：允许 Agent 在限定范围内议价（config: max_discount_pct, min_quantity）
+- quality_guarantee 质量承诺：额外质押保证金，问题可额外赔偿（config: guarantee_amount, coverage_days）
+- instant_ship      极速发货：承诺 24h 内发货（config: ship_within_hours）
+
+action 说明：
+- list        浏览 Skill 市场（无需登录）
+- publish     发布新 Skill（仅卖家）
+- subscribe   订阅 Skill（买家订阅后可获得额外好处）
+- unsubscribe 取消订阅
+- my_skills   查看自己发布的 Skill（卖家）
+- my_subs     查看自己订阅的 Skill（买家）`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        api_key: { type: 'string', description: '你的 api_key（list 时可省略）' },
+        action: {
+          type: 'string',
+          enum: ['list', 'publish', 'subscribe', 'unsubscribe', 'my_skills', 'my_subs'],
+          description: '要执行的操作',
+        },
+        // list 过滤参数
+        skill_type: {
+          type: 'string',
+          enum: ['catalog_sync', 'auto_accept', 'price_negotiation', 'quality_guarantee', 'instant_ship'],
+          description: '过滤 Skill 类型（list 时可选）',
+        },
+        query: { type: 'string', description: '关键词搜索（list 时可选）' },
+        // publish 参数
+        name: { type: 'string', description: 'Skill 名称（publish 时必填）' },
+        description: { type: 'string', description: 'Skill 详细描述（publish 时必填）' },
+        category: { type: 'string', description: '分类（publish 时可选）' },
+        config: {
+          type: 'object',
+          description: 'Skill 配置（publish 时可选，如 auto_accept 需填 max_daily_orders）',
+        },
+        // subscribe 参数
+        skill_id: { type: 'string', description: 'Skill ID（subscribe/unsubscribe 时必填）' },
+      },
+      required: ['action'],
     },
   },
 ]
@@ -531,6 +595,18 @@ function handlePlaceOrder(args: Record<string, unknown>) {
 
   // 直接进入 paid 状态（Phase 0 模拟支付）
   transition(db, orderId, 'paid', user.id, [], '模拟支付完成，资金已托管')
+  notifyTransition(db, orderId, 'created', 'paid')
+
+  // 检查卖家是否开启了 auto_accept Skill，若是则自动接单
+  let autoAccepted = false
+  if (shouldAutoAccept(db, orderId)) {
+    const sysUser = db.prepare("SELECT id FROM users WHERE id = 'sys_protocol'").get() as { id: string }
+    const acceptResult = transition(db, orderId, 'accepted', sysUser.id, [], '⚡ auto_accept Skill 自动接单')
+    if (acceptResult.success) {
+      notifyTransition(db, orderId, 'paid', 'accepted')
+      autoAccepted = true
+    }
+  }
 
   return {
     success: true,
@@ -539,8 +615,11 @@ function handlePlaceOrder(args: Record<string, unknown>) {
     seller: product.seller_name,
     quantity,
     total_amount: `${totalAmount} DCP（已托管，等待交易完成后自动结算）`,
-    status: 'paid',
-    next: '等待卖家 24 小时内接单。卖家超时不接单将自动退款。',
+    status: autoAccepted ? 'accepted' : 'paid',
+    auto_accepted: autoAccepted || undefined,
+    next: autoAccepted
+      ? '⚡ 卖家已开启自动接单，订单已立即接受！等待卖家发货。'
+      : '等待卖家 24 小时内接单。卖家超时不接单将自动退款。',
     track: `用 dcp_get_status 查看订单进展`,
   }
 }
@@ -874,6 +953,97 @@ function handleDispute(args: Record<string, unknown>) {
   return { error: `未知 action：${action}` }
 }
 
+// ─── Skill 市场处理 ────────────────────────────────────────────
+
+function handleSkill(args: Record<string, unknown>) {
+  const action = args.action as string
+
+  // ── 浏览 Skill 市场 ────────────────────────────────────────
+  if (action === 'list') {
+    let userId: string | undefined
+    if (args.api_key) {
+      const a = requireAuth(db, args.api_key as string)
+      if (!('error' in a)) userId = a.user.id
+    }
+    const skills = listSkills(db, {
+      skillType: args.skill_type as SkillType | undefined,
+      query: args.query as string | undefined,
+      subscriberId: userId,
+      limit: 20,
+    })
+    return {
+      total: skills.length,
+      skill_types: Object.entries(SKILL_TYPE_META).map(([k, v]) => ({ type: k, label: v.label, icon: v.icon, description: v.description })),
+      skills: skills.map(formatSkillForAgent),
+    }
+  }
+
+  // 以下操作需要身份验证
+  const auth = requireAuth(db, args.api_key as string)
+  if ('error' in auth) return auth
+  const { user } = auth
+
+  // ── 发布 Skill ────────────────────────────────────────────
+  if (action === 'publish') {
+    if (!args.name)        return { error: '请填写 Skill 名称（name）' }
+    if (!args.description) return { error: '请填写 Skill 描述（description）' }
+    if (!args.skill_type)  return { error: '请选择 Skill 类型（skill_type）' }
+
+    const skill = publishSkill(db, {
+      sellerId:     user.id,
+      name:         args.name as string,
+      description:  args.description as string,
+      category:     args.category as string | undefined,
+      skillType:    args.skill_type as SkillType,
+      config:       args.config as Record<string, unknown> | undefined,
+    })
+    const meta = SKILL_TYPE_META[skill.skill_type as SkillType]
+    return {
+      success: true,
+      skill_id: skill.id,
+      message: `✅ Skill 「${skill.name}」已发布到 DCP Skill 市场！买家 Agent 现在可以订阅它。`,
+      type: `${meta.icon} ${meta.label}`,
+      tip: 'auto_accept Skill 发布后，买家新订单将自动被接受（无需手动操作）',
+    }
+  }
+
+  // ── 订阅 Skill ────────────────────────────────────────────
+  if (action === 'subscribe') {
+    if (!args.skill_id) return { error: '请提供 skill_id' }
+    const result = subscribeSkill(db, user.id, args.skill_id as string, args.config as Record<string, unknown> | undefined)
+    return { ...result, skill_id: args.skill_id }
+  }
+
+  // ── 取消订阅 ──────────────────────────────────────────────
+  if (action === 'unsubscribe') {
+    if (!args.skill_id) return { error: '请提供 skill_id' }
+    unsubscribeSkill(db, user.id, args.skill_id as string)
+    return { success: true, message: '已取消订阅' }
+  }
+
+  // ── 我发布的 Skill ────────────────────────────────────────
+  if (action === 'my_skills') {
+    const skills = getMySkills(db, user.id)
+    return {
+      total: skills.length,
+      skills: skills.map(formatSkillForAgent),
+      tip: skills.length === 0 ? '还没有发布任何 Skill。用 dcp_skill action=publish 发布你的第一个 Skill。' : undefined,
+    }
+  }
+
+  // ── 我订阅的 Skill ────────────────────────────────────────
+  if (action === 'my_subs') {
+    const skills = getMySubscriptions(db, user.id)
+    return {
+      total: skills.length,
+      subscriptions: skills.map(formatSkillForAgent),
+      tip: skills.length === 0 ? '还没有订阅任何 Skill。用 dcp_skill action=list 浏览市场。' : undefined,
+    }
+  }
+
+  return { error: `未知 action：${action}。可选：list, publish, subscribe, unsubscribe, my_skills, my_subs` }
+}
+
 // ─── 结算逻辑（买家确认后自动执行）──────────────────────────────
 
 function settleOrder(db: Database.Database, orderId: string) {
@@ -939,6 +1109,7 @@ export async function startMCPServer() {
         case 'dcp_wallet':        result = handleWallet(args); break
         case 'dcp_dispute':        result = handleDispute(args); break
         case 'dcp_notifications':  result = handleNotifications(args); break
+        case 'dcp_skill':          result = handleSkill(args); break
         default: result = { error: `未知工具：${name}` }
       }
     } catch (err) {

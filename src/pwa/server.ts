@@ -20,6 +20,17 @@ import {
   setPushCallback,
   type Notification,
 } from '../layer2-business/L2-6-notifications/notification-engine.js'
+import {
+  initSkillSchema,
+  publishSkill,
+  listSkills,
+  getMySkills,
+  subscribeSkill,
+  unsubscribeSkill,
+  getMySubscriptions,
+  shouldAutoAccept,
+  type SkillType,
+} from '../layer4-economics/L4-4-skill-market/skill-engine.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -27,6 +38,7 @@ const db = initDatabase()
 initSystemUser(db)
 initDisputeSchema(db)
 initNotificationSchema(db)
+initSkillSchema(db)
 
 const app = express()
 app.use(express.json())
@@ -199,7 +211,17 @@ app.post('/api/orders', (req, res) => {
   transition(db, orderId, 'paid', user.id as string, [], '模拟支付完成')
   notifyTransition(db, orderId, 'created', 'paid')
 
-  res.json({ success: true, order_id: orderId, total_amount: totalAmount })
+  // 检查卖家是否有 auto_accept Skill
+  let autoAccepted = false
+  if (shouldAutoAccept(db, orderId)) {
+    const sysUser = db.prepare("SELECT id FROM users WHERE id = 'sys_protocol'").get() as { id: string } | undefined
+    if (sysUser) {
+      const ar = transition(db, orderId, 'accepted', sysUser.id, [], '⚡ auto_accept Skill 自动接单')
+      if (ar.success) { notifyTransition(db, orderId, 'paid', 'accepted'); autoAccepted = true }
+    }
+  }
+
+  res.json({ success: true, order_id: orderId, total_amount: totalAmount, auto_accepted: autoAccepted || undefined })
 })
 
 // 更新订单状态（接单/发货/揽收/投递/确认/争议）
@@ -323,6 +345,69 @@ app.get('/api/notifications', (req, res) => {
 app.post('/api/notifications/read', (req, res) => {
   const user = auth(req, res); if (!user) return
   markRead(db, user.id as string, req.body?.id as string | undefined)
+  res.json({ success: true })
+})
+
+// ─── Skill 市场 API ───────────────────────────────────────────
+
+// 浏览 Skill 市场（公开，无需登录）
+app.get('/api/skills', (req, res) => {
+  const user = getUser(req)
+  const skills = listSkills(db, {
+    skillType: req.query.type as SkillType | undefined,
+    query: req.query.q as string | undefined,
+    subscriberId: user?.id as string | undefined,
+    limit: 30,
+  })
+  res.json(skills)
+})
+
+// 我发布的 Skill
+app.get('/api/skills/mine', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  res.json(getMySkills(db, user.id as string))
+})
+
+// 我订阅的 Skill
+app.get('/api/skills/subscriptions', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  res.json(getMySubscriptions(db, user.id as string))
+})
+
+// 发布新 Skill
+app.post('/api/skills', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  if (user.role !== 'seller') return void res.json({ error: '只有卖家才能发布 Skill' })
+  const { name, description, category, skill_type, config } = req.body
+  if (!name || !description || !skill_type) return void res.json({ error: '请填写 name、description、skill_type' })
+  try {
+    const skill = publishSkill(db, {
+      sellerId: user.id as string,
+      name, description, category,
+      skillType: skill_type as SkillType,
+      config: config ?? {},
+    })
+    res.json({ success: true, skill })
+  } catch (err) {
+    res.json({ error: (err as Error).message })
+  }
+})
+
+// 订阅 Skill
+app.post('/api/skills/:id/subscribe', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  try {
+    const result = subscribeSkill(db, user.id as string, req.params.id, req.body?.config ?? {})
+    res.json(result)
+  } catch (err) {
+    res.json({ error: (err as Error).message })
+  }
+})
+
+// 取消订阅 Skill
+app.delete('/api/skills/:id/subscribe', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  unsubscribeSkill(db, user.id as string, req.params.id)
   res.json({ success: true })
 })
 

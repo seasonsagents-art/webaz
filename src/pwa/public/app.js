@@ -6,6 +6,8 @@
 const state = {
   user: null,
   apiKey: localStorage.getItem('dcp_key') || null,
+  unread: 0,
+  sse: null,
 }
 
 // ─── API ─────────────────────────────────────────────────────
@@ -48,19 +50,21 @@ async function render(page, params) {
   if (state.apiKey && !state.user) {
     state.user = await GET('/me')
     if (state.user?.error) { state.apiKey = null; localStorage.removeItem('dcp_key'); state.user = null }
+    else connectSSE()
   }
 
   const app = document.getElementById('app')
 
   switch (page) {
     case '':
-    case 'shop':   return renderShop(app)
-    case 'orders': return renderOrders(app)
-    case 'order':  return renderOrderDetail(app, params[0])
-    case 'seller': return renderSeller(app)
-    case 'wallet': return renderWallet(app)
-    case 'login':  return renderLogin()
-    default:       return renderShop(app)
+    case 'shop':          return renderShop(app)
+    case 'orders':        return renderOrders(app)
+    case 'order':         return renderOrderDetail(app, params[0])
+    case 'seller':        return renderSeller(app)
+    case 'wallet':        return renderWallet(app)
+    case 'notifications': return renderNotifications(app)
+    case 'login':         return renderLogin()
+    default:              return renderShop(app)
   }
 }
 
@@ -102,10 +106,11 @@ function loading$() {
 
 function shell(content, activeTab) {
   const tabs = [
-    { id: 'shop',   icon: '🛍️',  label: '商店' },
-    { id: 'orders', icon: '📦',  label: '订单' },
-    { id: 'seller', icon: '🏪',  label: '卖家' },
-    { id: 'wallet', icon: '💰',  label: '钱包' },
+    { id: 'shop',          icon: '🛍️',  label: '商店' },
+    { id: 'orders',        icon: '📦',  label: '订单' },
+    { id: 'seller',        icon: '🏪',  label: '卖家' },
+    { id: 'notifications', icon: '🔔',  label: '通知', badge: true },
+    { id: 'wallet',        icon: '💰',  label: '钱包' },
   ]
   return `
     <nav class="navbar">
@@ -120,7 +125,10 @@ function shell(content, activeTab) {
     <nav class="tabbar">
       ${tabs.map(t => `
         <button class="tab-item ${activeTab === t.id ? 'active' : ''}" onclick="navigate('#${t.id}')">
-          <span class="tab-icon">${t.icon}</span>${t.label}
+          <span class="tab-icon" style="position:relative">
+            ${t.icon}
+            ${t.badge ? `<span id="notif-badge" style="position:absolute;top:-4px;right:-6px;background:#dc2626;color:#fff;border-radius:99px;font-size:10px;padding:0 4px;min-width:16px;text-align:center;display:${state.unread > 0 ? 'inline' : 'none'}">${state.unread || ''}</span>` : ''}
+          </span>${t.label}
         </button>`).join('')}
     </nav>`
 }
@@ -603,6 +611,90 @@ window.doLogout = () => {
   state.apiKey = null; state.user = null
   localStorage.removeItem('dcp_key')
   navigate('#login')
+}
+
+// ─── SSE 实时通知 ─────────────────────────────────────────────
+
+function connectSSE() {
+  if (!state.apiKey || state.sse) return
+  // EventSource 不支持自定义 header，通过 URL 参数传 key
+  state.sse = new EventSource(`/api/notifications/stream?key=${state.apiKey}`)
+
+  state.sse.onmessage = (e) => {
+    const data = JSON.parse(e.data)
+    if (data.type === 'init') {
+      updateBadge(data.unread)
+    } else {
+      // 实时推送：更新角标 + 显示 toast
+      state.unread++
+      updateBadge(state.unread)
+      showToast(data.title, data.body)
+    }
+  }
+  state.sse.onerror = () => {
+    state.sse?.close(); state.sse = null
+    // 5秒后重连
+    setTimeout(connectSSE, 5000)
+  }
+}
+
+function disconnectSSE() {
+  state.sse?.close(); state.sse = null
+}
+
+function updateBadge(count) {
+  state.unread = count
+  // 更新 tab bar 角标
+  const badge = document.getElementById('notif-badge')
+  if (badge) {
+    badge.textContent = count > 0 ? count : ''
+    badge.style.display = count > 0 ? 'inline' : 'none'
+  }
+}
+
+let toastTimer = null
+function showToast(title, body) {
+  let toast = document.getElementById('toast')
+  if (!toast) {
+    toast = document.createElement('div')
+    toast.id = 'toast'
+    toast.style.cssText = `position:fixed;bottom:76px;left:16px;right:16px;background:#1e1b4b;color:#fff;border-radius:12px;padding:12px 16px;font-size:14px;z-index:999;box-shadow:0 4px 20px rgba(0,0,0,.3);cursor:pointer`
+    toast.onclick = () => navigate('#notifications')
+    document.body.appendChild(toast)
+  }
+  toast.innerHTML = `<div style="font-weight:700;margin-bottom:3px">${title}</div><div style="opacity:.85;font-size:13px">${body}</div>`
+  toast.style.opacity = '1'
+  toast.style.transform = 'translateY(0)'
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => { toast.style.opacity = '0' }, 4000)
+}
+
+// ─── 通知列表页 ───────────────────────────────────────────────
+
+async function renderNotifications(app) {
+  if (!state.user) { renderLogin(); return }
+  app.innerHTML = shell(loading$(), 'notifications')
+
+  await POST('/notifications/read', {})  // 全部标为已读
+  updateBadge(0)
+
+  const data = await GET('/notifications')
+  const list = (data.notifications || [])
+  const html = list.length === 0
+    ? `<div class="empty"><div class="empty-icon">🔔</div><div class="empty-text">暂无通知</div></div>`
+    : list.map(n => `
+      <div class="card" ${n.order_id ? `onclick="navigate('#order/${n.order_id}')" style="cursor:pointer"` : ''}>
+        <div style="display:flex;gap:12px;align-items:flex-start">
+          <div style="font-size:24px;line-height:1;flex-shrink:0">${n.title.slice(0,2)}</div>
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:14px">${n.title.slice(2)}</div>
+            <div style="font-size:13px;color:#6b7280;margin-top:3px">${n.body}</div>
+            <div style="font-size:11px;color:#d1d5db;margin-top:4px">${fmtTime(n.created_at)}</div>
+          </div>
+        </div>
+      </div>`).join('')
+
+  app.innerHTML = shell(`<h1 class="page-title">通知</h1>${html}`, 'notifications')
 }
 
 // ─── 启动 ─────────────────────────────────────────────────────

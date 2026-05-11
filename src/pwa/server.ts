@@ -11,16 +11,36 @@ import { fileURLToPath } from 'url'
 import { initDatabase, generateId } from '../layer0-foundation/L0-1-database/schema.js'
 import { initSystemUser, transition, getOrderStatus } from '../layer0-foundation/L0-2-state-machine/engine.js'
 import { initDisputeSchema, createDispute, respondToDispute, arbitrateDispute, getOrderDispute } from '../layer3-trust/L3-1-dispute-engine/dispute-engine.js'
+import {
+  initNotificationSchema,
+  notifyTransition,
+  getNotifications,
+  getUnreadCount,
+  markRead,
+  setPushCallback,
+  type Notification,
+} from '../layer2-business/L2-6-notifications/notification-engine.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const db = initDatabase()
 initSystemUser(db)
 initDisputeSchema(db)
+initNotificationSchema(db)
 
 const app = express()
 app.use(express.json())
-app.use(express.static(path.join(__dirname, 'public')))
+// express.static は API ルートの後で登録する（順番が重要）
+
+// ─── SSE 连接池（userId → Response）──────────────────────────
+const sseClients = new Map<string, Response>()
+
+setPushCallback((userId: string, notif: Notification) => {
+  const client = sseClients.get(userId)
+  if (client) {
+    try { client.write(`data: ${JSON.stringify(notif)}\n\n`) } catch {}
+  }
+})
 
 // ─── Auth 中间件 ──────────────────────────────────────────────
 
@@ -177,6 +197,7 @@ app.post('/api/orders', (req, res) => {
     .run(totalAmount, totalAmount, user.id)
   db.prepare('UPDATE products SET stock = stock - 1 WHERE id = ?').run(product.id)
   transition(db, orderId, 'paid', user.id as string, [], '模拟支付完成')
+  notifyTransition(db, orderId, 'created', 'paid')
 
   res.json({ success: true, order_id: orderId, total_amount: totalAmount })
 })
@@ -210,8 +231,12 @@ app.post('/api/orders/:id/action', (req, res) => {
     evidenceIds.push(eid)
   }
 
+  const fromStatus = (order as Record<string, unknown>).status as string
   const result = transition(db, req.params.id, toStatus as Parameters<typeof transition>[2], user.id as string, evidenceIds, notes)
   if (!result.success) return void res.json({ error: result.error })
+
+  // 通知相关参与方
+  notifyTransition(db, req.params.id, fromStatus, toStatus)
 
   // 发起争议时写入 disputes 表
   if (toStatus === 'disputed') {
@@ -222,6 +247,7 @@ app.post('/api/orders/:id/action', (req, res) => {
   if (toStatus === 'confirmed') {
     const sysUser = db.prepare("SELECT id FROM users WHERE id = 'sys_protocol'").get() as { id: string }
     transition(db, req.params.id, 'completed', sysUser.id, [], '系统自动结算')
+    notifyTransition(db, req.params.id, 'confirmed', 'completed')
     settleOrder(req.params.id)
   }
 
@@ -254,7 +280,54 @@ function settleOrder(orderId: string) {
   db.prepare('UPDATE wallets SET staked = staked - ?, balance = balance + ? WHERE user_id = ?').run(product.stake_amount, product.stake_amount, order.seller_id as string)
 }
 
-// ─── SPA 回退（任何非 API 路径都返回 index.html）──────────────
+// ─── 通知 API ─────────────────────────────────────────────────
+
+// SSE 实时推送流（EventSource 不支持自定义 header，用 URL 参数传 key）
+app.get('/api/notifications/stream', (req, res) => {
+  const key = (req.query.key as string) ?? req.headers.authorization?.replace('Bearer ', '')
+  const user = key ? db.prepare('SELECT * FROM users WHERE api_key = ?').get(key) as Record<string, unknown> | null : null
+  if (!user) return void res.status(401).end()
+
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.flushHeaders()
+
+  sseClients.set(user.id as string, res)
+
+  // 连接时推送未读数
+  const unread = getUnreadCount(db, user.id as string)
+  res.write(`data: ${JSON.stringify({ type: 'init', unread })}\n\n`)
+
+  // 心跳保活（每 30s）
+  const heartbeat = setInterval(() => {
+    try { res.write(': ping\n\n') } catch { clearInterval(heartbeat) }
+  }, 30_000)
+
+  req.on('close', () => {
+    sseClients.delete(user.id as string)
+    clearInterval(heartbeat)
+  })
+})
+
+// 获取通知列表
+app.get('/api/notifications', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  const onlyUnread = req.query.unread === '1'
+  const notifs = getNotifications(db, user.id as string, onlyUnread)
+  const unread = getUnreadCount(db, user.id as string)
+  res.json({ unread, notifications: notifs })
+})
+
+// 标记已读（不传 id 则全部已读）
+app.post('/api/notifications/read', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  markRead(db, user.id as string, req.body?.id as string | undefined)
+  res.json({ success: true })
+})
+
+// ─── 静态文件 + SPA 回退（必须在所有 API 路由之后）────────────
+app.use(express.static(path.join(__dirname, 'public')))
 
 app.get('/{*path}', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'))

@@ -36,13 +36,21 @@ import {
   getOrderDispute,
   getOpenDisputes,
 } from '../../layer3-trust/L3-1-dispute-engine/dispute-engine.js'
+import {
+  initNotificationSchema,
+  notifyTransition,
+  getNotifications,
+  getUnreadCount,
+  markRead,
+} from '../../layer2-business/L2-6-notifications/notification-engine.js'
 import { requireAuth } from './auth.js'
 
 // ─── 初始化 ──────────────────────────────────────────────────
 
 const db: Database.Database = initDatabase()
 initSystemUser(db)
-initDisputeSchema(db)  // L3：为 disputes 表添加争议引擎所需列
+initDisputeSchema(db)
+initNotificationSchema(db)
 
 // ─── 工具定义（Agent 读这些来理解如何使用协议）────────────────
 
@@ -202,6 +210,21 @@ const TOOLS = [
       type: 'object',
       properties: {
         api_key: { type: 'string', description: '你的 api_key' },
+      },
+      required: ['api_key'],
+    },
+  },
+  {
+    name: 'dcp_notifications',
+    description: `查询当前用户的通知消息（L2-6 通知系统）。
+Agent 应定期调用此工具检查是否有待处理的订单事件。
+每次有状态变更（新订单/发货/争议等），相关参与方都会收到通知。`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        api_key:    { type: 'string', description: '你的 api_key' },
+        unread:     { type: 'boolean', description: '只返回未读通知（默认 false）' },
+        mark_read:  { type: 'boolean', description: '调用后自动标为已读（默认 false）' },
       },
       required: ['api_key'],
     },
@@ -595,6 +618,9 @@ function handleUpdateOrder(args: Record<string, unknown>) {
     return { error: result.error }
   }
 
+  // 通知相关参与方（L2-6）
+  notifyTransition(db, orderId, order.status as string, toStatus)
+
   // 如果是 dispute，写入 disputes 表（L3-1）
   if (toStatus === 'disputed') {
     const disputeResult = createDispute(db, orderId, user.id, notes || evidenceDesc || '买家发起争议', evidenceIds)
@@ -699,6 +725,34 @@ function handleWallet(args: Record<string, unknown>) {
     staked: `${wallet.staked} DCP（质押中，不可用）`,
     escrowed: `${wallet.escrowed} DCP（托管中，交易完成后结算）`,
     total_earned: `${payouts.total ?? 0} DCP（历史累计收益）`,
+  }
+}
+
+// ─── 通知处理 ─────────────────────────────────────────────────
+
+function handleNotifications(args: Record<string, unknown>) {
+  const auth = requireAuth(db, args.api_key as string)
+  if ('error' in auth) return auth
+  const { user } = auth
+
+  const onlyUnread = args.unread === true
+  const notifs = getNotifications(db, user.id, onlyUnread, 30)
+  const unread = getUnreadCount(db, user.id)
+
+  if (args.mark_read) {
+    markRead(db, user.id)
+  }
+
+  return {
+    unread_count: unread,
+    notifications: notifs.map(n => ({
+      id: n.id,
+      title: n.title,
+      body: n.body,
+      order_id: n.order_id,
+      read: n.read === 1,
+      time: n.created_at,
+    })),
   }
 }
 
@@ -883,7 +937,8 @@ export async function startMCPServer() {
         case 'dcp_update_order':  result = handleUpdateOrder(args); break
         case 'dcp_get_status':    result = handleGetStatus(args); break
         case 'dcp_wallet':        result = handleWallet(args); break
-        case 'dcp_dispute':       result = handleDispute(args); break
+        case 'dcp_dispute':        result = handleDispute(args); break
+        case 'dcp_notifications':  result = handleNotifications(args); break
         default: result = { error: `未知工具：${name}` }
       }
     } catch (err) {

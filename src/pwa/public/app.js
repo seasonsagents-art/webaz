@@ -228,7 +228,7 @@ async function renderShop(app) {
             <div class="product-body">
               <div class="product-name">${p.title}</div>
               <div class="product-price">${p.price} <span style="font-size:11px;font-weight:400">DCP</span></div>
-              <div class="product-seller">@${p.seller_name}</div>
+              <div class="product-seller">${repBadge(p.rep_level)}@${p.seller_name}</div>
             </div>
           </div>`).join('')}
        </div>`
@@ -259,7 +259,7 @@ window.doSearch = async () => {
             <div class="product-body">
               <div class="product-name">${p.title}</div>
               <div class="product-price">${p.price} DCP</div>
-              <div class="product-seller">@${p.seller_name}</div>
+              <div class="product-seller">${repBadge(p.rep_level)}@${p.seller_name}</div>
             </div>
           </div>`).join('')}
        </div>`
@@ -269,6 +269,11 @@ window.doSearch = async () => {
 function getCategoryIcon(cat) {
   const map = { '茶具':'🍵', '家居':'🏠', '食品':'🍱', '服装':'👗', '电子':'📱', '手工':'🎨' }
   return map[cat] || '📦'
+}
+
+function repBadge(level) {
+  const map = { new:'', trusted:'⭐', quality:'🌟', star:'💫', legend:'🔥' }
+  return map[level] || ''
 }
 
 // 买家下单页
@@ -677,7 +682,26 @@ window.doPublishSkill = async () => {
 async function renderWallet(app) {
   if (!state.user) { renderLogin(); return }
   app.innerHTML = shell(loading$(), 'wallet')
-  const wallet = await GET('/wallet')
+  const [wallet, rep] = await Promise.all([GET('/wallet'), GET('/reputation')])
+
+  const LEVEL_LABELS = { new:'新手 🌱', trusted:'可信 ⭐', quality:'优质 🌟', star:'明星 💫', legend:'传奇 🔥' }
+  const LEVEL_THRESHOLDS = { new:0, trusted:200, quality:800, star:2000, legend:5000 }
+  const levelKeys = ['new','trusted','quality','star','legend']
+  const curIdx = levelKeys.indexOf(rep.level?.key || 'new')
+  const nextKey = levelKeys[curIdx + 1]
+  const nextThreshold = LEVEL_THRESHOLDS[nextKey]
+  const curPoints = rep.total_points || 0
+  const progressPct = nextThreshold
+    ? Math.min(100, Math.round((curPoints - LEVEL_THRESHOLDS[rep.level?.key || 'new']) / (nextThreshold - LEVEL_THRESHOLDS[rep.level?.key || 'new']) * 100))
+    : 100
+
+  const recentHtml = (rep.recent_events || []).length > 0
+    ? rep.recent_events.slice(0,5).map(e => `
+        <div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;border-bottom:1px solid #f3f4f6">
+          <span style="color:#6b7280">${e.reason}</span>
+          <span style="font-weight:600;color:${e.points > 0 ? '#059669' : '#dc2626'}">${e.points > 0 ? '+' : ''}${e.points}</span>
+        </div>`).join('')
+    : `<div style="color:#9ca3af;font-size:13px;text-align:center;padding:12px 0">完成第一笔交易后开始积累声誉</div>`
 
   app.innerHTML = shell(`
     <h1 class="page-title">我的钱包</h1>
@@ -702,6 +726,31 @@ async function renderWallet(app) {
         </div>
       </div>
     </div>
+
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div style="font-weight:700">声誉积分</div>
+        <div style="font-size:20px;font-weight:800;color:#4f46e5">${curPoints} 分</div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span style="font-size:14px;font-weight:600">${LEVEL_LABELS[rep.level?.key || 'new'] || '新手 🌱'}</span>
+        ${nextKey ? `<span style="font-size:12px;color:#6b7280">距 ${LEVEL_LABELS[nextKey]} 还差 ${nextThreshold - curPoints} 分</span>` : '<span style="font-size:12px;color:#f59e0b">最高等级 🏆</span>'}
+      </div>
+      <div style="height:8px;background:#f3f4f6;border-radius:99px;overflow:hidden;margin-bottom:12px">
+        <div style="height:100%;width:${progressPct}%;background:linear-gradient(90deg,#4f46e5,#7c3aed);border-radius:99px;transition:width .3s"></div>
+      </div>
+      <div class="wallet-grid" style="margin-bottom:12px">
+        <div class="wallet-item"><div class="wallet-label">成交次数</div><div class="wallet-value" style="font-size:18px">${rep.transactions_done || 0}</div></div>
+        <div class="wallet-item"><div class="wallet-label">争议胜/败</div><div class="wallet-value" style="font-size:18px">${rep.disputes_won || 0}/${rep.disputes_lost || 0}</div></div>
+        <div class="wallet-item" style="grid-column:1/-1">
+          <div class="wallet-label">质押优惠</div>
+          <div class="wallet-value" style="font-size:15px">${rep.level?.stakeDiscount > 0 ? `-${(rep.level.stakeDiscount * 100).toFixed(0)}%（当前 ${((0.15 - rep.level.stakeDiscount) * 100).toFixed(0)}%）` : '暂无（升到可信即可享受 -5%）'}</div>
+        </div>
+      </div>
+      <div style="font-weight:600;font-size:13px;margin-bottom:6px">最近记录</div>
+      ${recentHtml}
+    </div>
+
     <div class="alert alert-info" style="font-size:13px">
       DCP 为协议内模拟货币。Phase 2 将接入真实链上资产。
     </div>

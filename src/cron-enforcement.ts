@@ -12,11 +12,13 @@
 import { initDatabase } from './layer0-foundation/L0-1-database/schema.js'
 import { initSystemUser, checkTimeouts } from './layer0-foundation/L0-2-state-machine/engine.js'
 import { initDisputeSchema, checkDisputeTimeouts } from './layer3-trust/L3-1-dispute-engine/dispute-engine.js'
+import { initReputationSchema, recordViolationReputation, recordDisputeReputation } from './layer4-economics/L4-3-reputation/reputation-engine.js'
 
 const INTERVAL_MS = 5 * 60 * 1000   // 5 分钟
 const db = initDatabase()
 initSystemUser(db)
 initDisputeSchema(db)
+initReputationSchema(db)
 
 function timestamp() {
   return new Date().toLocaleString('zh-CN', { hour12: false })
@@ -42,12 +44,22 @@ async function enforce() {
 
     if (orderResult.processed > 0) {
       console.log(`\n   📦 订单超时判责 × ${orderResult.processed}`)
-      orderResult.details.forEach(d => console.log(`      ${d.orderId}  ${d.action}`))
+      orderResult.details.forEach(d => {
+        console.log(`      ${d.orderId}  ${d.action}`)
+        // 判责的终态：fault_seller / fault_logistics / fault_buyer
+        const faultMatch = d.action.match(/→ (fault_\w+)/)
+        if (faultMatch) recordViolationReputation(db, d.orderId, faultMatch[1])
+      })
     }
 
     if (disputeResult.processed > 0) {
       console.log(`\n   ⚖️  争议自动裁定 × ${disputeResult.processed}`)
-      disputeResult.details.forEach(d => console.log(`      ${d.disputeId}  ${d.action}`))
+      disputeResult.details.forEach(d => {
+        console.log(`      ${d.disputeId}  ${d.action}`)
+        if (d.winnerId && d.loserId && d.orderId) {
+          recordDisputeReputation(db, d.orderId, d.winnerId, d.loserId)
+        }
+      })
     }
     line()
   } else {

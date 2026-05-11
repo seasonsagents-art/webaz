@@ -31,6 +31,14 @@ import {
   shouldAutoAccept,
   type SkillType,
 } from '../layer4-economics/L4-4-skill-market/skill-engine.js'
+import {
+  initReputationSchema,
+  recordOrderReputation,
+  recordViolationReputation,
+  getReputation,
+  getSearchBoost,
+  getStakeDiscount,
+} from '../layer4-economics/L4-3-reputation/reputation-engine.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -39,6 +47,7 @@ initSystemUser(db)
 initDisputeSchema(db)
 initNotificationSchema(db)
 initSkillSchema(db)
+initReputationSchema(db)
 
 const app = express()
 app.use(express.json())
@@ -96,17 +105,20 @@ app.get('/api/me', (req, res) => {
   res.json({ ...user, api_key: undefined, wallet })
 })
 
-// 搜索商品
+// 搜索商品（声誉权重排序）
 app.get('/api/products', (req, res) => {
   const { q = '', category, max_price } = req.query
-  let sql = `SELECT p.*, u.name as seller_name FROM products p
+  let sql = `SELECT p.*, u.name as seller_name,
+    COALESCE(rs.total_points, 0) as rep_points, COALESCE(rs.level, 'new') as rep_level
+    FROM products p
     JOIN users u ON p.seller_id = u.id
+    LEFT JOIN reputation_scores rs ON rs.user_id = p.seller_id
     WHERE p.status = 'active' AND p.stock > 0`
   const params: unknown[] = []
   if (q) { sql += ` AND (p.title LIKE ? OR p.description LIKE ?)`; params.push(`%${q}%`, `%${q}%`) }
   if (category) { sql += ` AND p.category = ?`; params.push(category) }
   if (max_price) { sql += ` AND p.price <= ?`; params.push(Number(max_price)) }
-  sql += ` ORDER BY p.created_at DESC LIMIT 30`
+  sql += ` ORDER BY rep_points DESC, p.created_at DESC LIMIT 30`
   res.json(db.prepare(sql).all(...params))
 })
 
@@ -126,7 +138,9 @@ app.post('/api/products', (req, res) => {
   if (!title || !description || !price) return void res.json({ error: '请填写商品名、描述、价格' })
 
   const priceNum = Number(price)
-  const stakeAmount = Math.round(priceNum * 0.15 * 100) / 100
+  const stakeDiscount = getStakeDiscount(db, user.id as string)
+  const stakeRate = Math.max(0.05, 0.15 - stakeDiscount)
+  const stakeAmount = Math.round(priceNum * stakeRate * 100) / 100
   const wallet = db.prepare('SELECT balance FROM wallets WHERE user_id = ?').get(user.id) as { balance: number }
 
   if (wallet.balance < stakeAmount) {
@@ -300,6 +314,9 @@ function settleOrder(orderId: string) {
   if (order.logistics_id) db.prepare('UPDATE wallets SET balance = balance + ?, earned = earned + ? WHERE user_id = ?').run(logisticsFee, logisticsFee, order.logistics_id as string)
   if (order.promoter_id)  db.prepare('UPDATE wallets SET balance = balance + ?, earned = earned + ? WHERE user_id = ?').run(promoterFee, promoterFee, order.promoter_id as string)
   db.prepare('UPDATE wallets SET staked = staked - ?, balance = balance + ? WHERE user_id = ?').run(product.stake_amount, product.stake_amount, order.seller_id as string)
+
+  // L4-3 声誉积分
+  recordOrderReputation(db, orderId)
 }
 
 // ─── 通知 API ─────────────────────────────────────────────────
@@ -409,6 +426,36 @@ app.delete('/api/skills/:id/subscribe', (req, res) => {
   const user = auth(req, res); if (!user) return
   unsubscribeSkill(db, user.id as string, req.params.id)
   res.json({ success: true })
+})
+
+// ─── 声誉 API ─────────────────────────────────────────────────
+
+// 我的声誉
+app.get('/api/reputation', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  const rep = getReputation(db, user.id as string)
+  res.json({
+    level:             rep.level,
+    total_points:      rep.total_points,
+    transactions_done: rep.transactions_done,
+    disputes_won:      rep.disputes_won,
+    disputes_lost:     rep.disputes_lost,
+    violations:        rep.violations,
+    recent_events:     rep.recent_events,
+  })
+})
+
+// 查看任意用户的声誉（公开）
+app.get('/api/reputation/:userId', (req, res) => {
+  const rep = getReputation(db, req.params.userId)
+  res.json({
+    level:             rep.level,
+    total_points:      rep.total_points,
+    transactions_done: rep.transactions_done,
+    disputes_won:      rep.disputes_won,
+    disputes_lost:     rep.disputes_lost,
+    violations:        rep.violations,
+  })
 })
 
 // ─── 静态文件 + SPA 回退（必须在所有 API 路由之后）────────────

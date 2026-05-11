@@ -342,10 +342,10 @@ function executeSettlement(
  */
 export function checkDisputeTimeouts(db: Database.Database): {
   processed: number
-  details: Array<{ disputeId: string; action: string }>
+  details: Array<{ disputeId: string; action: string; orderId?: string; winnerId?: string; loserId?: string }>
 } {
   const now = new Date().toISOString()
-  const details: Array<{ disputeId: string; action: string }> = []
+  const details: Array<{ disputeId: string; action: string; orderId?: string; winnerId?: string; loserId?: string }> = []
 
   const openDisputes = db.prepare(
     `SELECT * FROM disputes WHERE status IN ('open', 'in_review')`
@@ -362,14 +362,27 @@ export function checkDisputeTimeouts(db: Database.Database): {
 
       const r = arbitrateDispute(db, dispute.id, sysUser.id, ruling, '被诉方超时未提交反驳证据，协议自动裁定')
       if (r.success) {
-        details.push({ disputeId: dispute.id, action: `被告超时 → ${ruling}` })
+        details.push({
+          disputeId: dispute.id,
+          action: `被告超时 → ${ruling}`,
+          orderId: dispute.order_id,
+          winnerId: dispute.initiator_id,
+          loserId: dispute.defendant_id,
+        })
       }
 
     } else if (dispute.status === 'in_review' && dispute.arbitrate_deadline && now > dispute.arbitrate_deadline) {
       // 仲裁员超时未裁定 → 买家保护原则，默认退款
       const r = arbitrateDispute(db, dispute.id, sysUser.id, 'refund_buyer', '仲裁员超时未裁定，协议默认退款买家（买家保护原则）')
       if (r.success) {
-        details.push({ disputeId: dispute.id, action: '仲裁超时 → 默认退款买家' })
+        // 默认退款买家 → 买家胜，被告（卖家）败
+        details.push({
+          disputeId: dispute.id,
+          action: '仲裁超时 → 默认退款买家',
+          orderId: dispute.order_id,
+          winnerId: dispute.initiator_id,
+          loserId: dispute.defendant_id,
+        })
       }
     }
   }

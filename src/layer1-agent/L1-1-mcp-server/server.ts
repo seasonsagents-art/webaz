@@ -55,6 +55,15 @@ import {
   SKILL_TYPE_META,
   type SkillType,
 } from '../../layer4-economics/L4-4-skill-market/skill-engine.js'
+import {
+  initReputationSchema,
+  recordOrderReputation,
+  recordViolationReputation,
+  recordDisputeReputation,
+  getReputation,
+  getSearchBoost,
+  getStakeDiscount,
+} from '../../layer4-economics/L4-3-reputation/reputation-engine.js'
 import { requireAuth } from './auth.js'
 
 // ─── 初始化 ──────────────────────────────────────────────────
@@ -64,6 +73,7 @@ initSystemUser(db)
 initDisputeSchema(db)
 initNotificationSchema(db)
 initSkillSchema(db)
+initReputationSchema(db)
 
 // ─── 工具定义（Agent 读这些来理解如何使用协议）────────────────
 
@@ -444,18 +454,32 @@ function handleSearch(args: Record<string, unknown>) {
     return { found: 0, message: '没有找到匹配的商品', products: [] }
   }
 
+  // 按声誉权重排序：先排原始排序，再按卖家声誉加权
+  const sorted = products
+    .map((p) => {
+      const boost = getSearchBoost(db, p.seller_id as string)
+      const rep = db.prepare('SELECT total_points, level FROM reputation_scores WHERE user_id = ?').get(p.seller_id as string) as { total_points: number; level: string } | undefined
+      return { ...p, _boost: boost, _rep_level: rep?.level ?? 'new', _rep_points: rep?.total_points ?? 0 }
+    })
+    .sort((a, b) => b._boost - a._boost)
+
   return {
-    found: products.length,
-    products: products.map((p) => ({
-      id: p.id,
-      title: p.title,
-      description: p.description,
-      price: `${p.price} DCP`,
-      stock: p.stock,
-      category: p.category,
-      seller: p.seller_name,
-      seller_id: p.seller_id,
-    })),
+    found: sorted.length,
+    products: sorted.map((p) => {
+      const levelMeta = { new:'', trusted:'⭐', quality:'🌟', star:'💫', legend:'🔥' }
+      const badge = levelMeta[p._rep_level as keyof typeof levelMeta] ?? ''
+      return {
+        id: p.id,
+        title: p.title,
+        description: p.description,
+        price: `${p.price} DCP`,
+        stock: p.stock,
+        category: p.category,
+        seller: badge ? `${badge} ${p.seller_name}` : p.seller_name,
+        seller_id: p.seller_id,
+        seller_reputation: p._rep_level !== 'new' ? `${badge} ${['','可信','优质','明星','传奇'][['new','trusted','quality','star','legend'].indexOf(p._rep_level)]}（${p._rep_points}分）` : undefined,
+      }
+    }),
   }
 }
 
@@ -469,7 +493,9 @@ function handleListProduct(args: Record<string, unknown>) {
   }
 
   const price = args.price as number
-  const stakeAmount = Math.round(price * 0.15 * 100) / 100
+  const stakeDiscount = getStakeDiscount(db, user.id)
+  const stakeRate = Math.max(0.05, 0.15 - stakeDiscount)   // 最低 5%，声誉越高折扣越大
+  const stakeAmount = Math.round(price * stakeRate * 100) / 100
 
   // 检查卖家是否有足够余额质押
   const wallet = db
@@ -502,12 +528,15 @@ function handleListProduct(args: Record<string, unknown>) {
     UPDATE wallets SET balance = balance - ?, staked = staked + ? WHERE user_id = ?
   `).run(stakeAmount, stakeAmount, user.id)
 
+  const rep = getReputation(db, user.id)
   return {
     success: true,
     product_id: id,
     title: args.title,
     price: `${price} DCP`,
     stake_locked: `${stakeAmount} DCP（质押保证金，交易完成后返还）`,
+    stake_rate: stakeDiscount > 0 ? `${(stakeRate * 100).toFixed(0)}%（声誉折扣 -${(stakeDiscount * 100).toFixed(0)}%，原 15%）` : '15%',
+    reputation_level: rep.level.label,
     status: 'active（买家现在可以搜索到这件商品）',
   }
 }
@@ -797,6 +826,11 @@ function handleWallet(args: Record<string, unknown>) {
     .prepare('SELECT SUM(amount) as total FROM payouts WHERE recipient_id = ?')
     .get(user.id) as { total: number | null }
 
+  const rep = getReputation(db, user.id)
+  const nextLevel = ['new','trusted','quality','star','legend']
+  const nextIdx = nextLevel.indexOf(rep.level.key) + 1
+  const nextLevelDef = nextIdx < nextLevel.length ? { trusted:200, quality:800, star:2000, legend:5000 }[nextLevel[nextIdx] as string] : null
+
   return {
     user: user.name,
     role: user.role,
@@ -804,6 +838,17 @@ function handleWallet(args: Record<string, unknown>) {
     staked: `${wallet.staked} DCP（质押中，不可用）`,
     escrowed: `${wallet.escrowed} DCP（托管中，交易完成后结算）`,
     total_earned: `${payouts.total ?? 0} DCP（历史累计收益）`,
+    reputation: {
+      level:             `${rep.level.icon} ${rep.level.label}`,
+      total_points:      rep.total_points,
+      transactions_done: rep.transactions_done,
+      disputes_won:      rep.disputes_won,
+      disputes_lost:     rep.disputes_lost,
+      violations:        rep.violations,
+      stake_discount:    rep.level.stakeDiscount > 0 ? `-${(rep.level.stakeDiscount * 100).toFixed(0)}% 质押优惠` : '暂无（升级后享优惠）',
+      next_level:        nextLevelDef ? `距下一等级还需 ${nextLevelDef - rep.total_points} 分` : '已达最高等级！',
+      recent_events:     rep.recent_events.slice(0, 5).map(e => `${e.points > 0 ? '+' : ''}${e.points} ${e.reason}`),
+    },
   }
 }
 
@@ -940,7 +985,7 @@ function handleDispute(args: Record<string, unknown>) {
       return { error: 'partial_refund 需要提供 refund_amount' }
     }
 
-    return arbitrateDispute(
+    const result = arbitrateDispute(
       db,
       args.dispute_id as string,
       user.id,
@@ -948,6 +993,22 @@ function handleDispute(args: Record<string, unknown>) {
       args.ruling_reason as string,
       args.refund_amount as number | undefined
     )
+
+    // L4-3 争议声誉：裁定完成后更新声誉
+    if (result.success) {
+      const dispute = getDisputeDetails(db, args.dispute_id as string)
+      if (dispute?.order_id) {
+        const ruling = args.ruling as string
+        // refund_buyer → 原告(买家)胜，被告(卖家)败；release_seller → 反之
+        const initiatorId  = dispute.initiator_id as string
+        const defendantId  = dispute.defendant_id as string
+        const winnerId = ruling === 'refund_buyer' ? initiatorId : defendantId
+        const loserId  = ruling === 'refund_buyer' ? defendantId : initiatorId
+        recordDisputeReputation(db, dispute.order_id as string, winnerId, loserId)
+      }
+    }
+
+    return result
   }
 
   return { error: `未知 action：${action}` }
@@ -1081,6 +1142,9 @@ function settleOrder(db: Database.Database, orderId: string) {
   const product = db.prepare('SELECT stake_amount FROM products WHERE id = ?').get(order.product_id as string) as { stake_amount: number }
   db.prepare(`UPDATE wallets SET staked = staked - ?, balance = balance + ? WHERE user_id = ?`)
     .run(product.stake_amount, product.stake_amount, sellerId)
+
+  // L4-3 声誉积分：交易完成后自动更新各方声誉
+  recordOrderReputation(db, orderId)
 }
 
 // ─── MCP Server 主体 ──────────────────────────────────────────

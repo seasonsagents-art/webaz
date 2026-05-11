@@ -18,6 +18,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
 import Database from 'better-sqlite3'
 
@@ -64,6 +66,11 @@ import {
   getSearchBoost,
   getStakeDiscount,
 } from '../../layer4-economics/L4-3-reputation/reputation-engine.js'
+import {
+  generateManifest,
+  getManifestSummary,
+  MANIFEST_URI,
+} from '../../layer0-foundation/L0-5-manifest/manifest.js'
 import { requireAuth } from './auth.js'
 
 // ─── 初始化 ──────────────────────────────────────────────────
@@ -354,33 +361,33 @@ action 说明：
 // ─── 工具处理函数 ─────────────────────────────────────────────
 
 function handleInfo() {
+  const summary = getManifestSummary()
+  const stats = (() => {
+    try {
+      const users     = (db.prepare("SELECT COUNT(*) as n FROM users WHERE id != 'sys_protocol'").get() as {n:number}).n
+      const products  = (db.prepare("SELECT COUNT(*) as n FROM products WHERE status='active'").get() as {n:number}).n
+      const completed = (db.prepare("SELECT COUNT(*) as n FROM orders WHERE status='completed'").get() as {n:number}).n
+      return { participants: users, active_products: products, completed_orders: completed }
+    } catch { return null }
+  })()
+
   return {
-    protocol: 'DCP — Decentralized Commerce Protocol',
-    version: '0.1.0',
-    description:
-      'DCP 是一个去中心化商业协议。每笔交易通过状态机流转，每个状态转移都需要对应责任方的操作证明。任何超时未操作，协议自动判定该方违约并执行处置。',
+    ...summary,
+    description: 'DCP 是一个去中心化商业协议。每笔交易通过状态机流转，每个状态转移都需要对应责任方的操作证明。任何超时未操作，协议自动判定该方违约并执行处置。',
+    live_stats: stats,
     roles: {
-      buyer: '下单、付款、确认收货或发起争议',
-      seller: '上架商品、接单、按时发货',
-      logistics: '揽收包裹、更新运输状态、确认投递',
-      reviewer: '对商品进行结构化测评（可选）',
-      arbitrator: '处理争议，多签裁定',
+      buyer:      '下单、付款、确认收货或发起争议',
+      seller:     '上架商品、接单、按时发货（质押保证金确保履约）',
+      logistics:  '揽收包裹、更新运输状态、确认投递（获得 5% 物流费）',
+      arbitrator: '处理争议，做出裁定（120h 内必须裁定，否则系统自动退款买家）',
     },
-    transaction_flow: [
-      '买家下单 → 资金自动托管',
-      '卖家 24h 内接单（超时自动退款）',
-      '卖家按承诺时间发货（需提交物流单号）',
-      '物流 48h 内揽收（超时判物流违约）',
-      '物流在承诺时间内投递（需提交投递证明）',
-      '买家 72h 内确认收货（超时自动确认）',
-      '协议自动按比例分配资金给各方',
-    ],
-    available_tools: TOOLS.map((t) => ({ name: t.name, description: t.description.split('\n')[0] })),
     quick_start: {
-      seller: '1. dcp_register(role=seller) → 2. dcp_list_product() → 3. dcp_update_order(action=accept/ship)',
-      buyer: '1. dcp_register(role=buyer) → 2. dcp_search() → 3. dcp_place_order() → 4. dcp_update_order(action=confirm)',
-      logistics: '1. dcp_register(role=logistics) → 2. dcp_update_order(action=pickup/transit/deliver)',
+      seller:    '1. dcp_register(role=seller) → 2. dcp_list_product() → 3. 等通知 dcp_update_order(accept/ship)',
+      buyer:     '1. dcp_register(role=buyer) → 2. dcp_search() → 3. dcp_place_order() → 4. dcp_update_order(confirm)',
+      logistics: '1. dcp_register(role=logistics) → 2. dcp_update_order(pickup) → dcp_update_order(deliver)',
     },
+    available_tools: TOOLS.map((t) => ({ name: t.name, description: t.description.split('\n')[0] })),
+    full_manifest: `读取 MCP Resource "${MANIFEST_URI}" 获取完整协议规范（状态机/经济模型/争议系统/Skill 市场/声誉系统）`,
   }
 }
 
@@ -1152,10 +1159,38 @@ function settleOrder(db: Database.Database, orderId: string) {
 export async function startMCPServer() {
   const server = new Server(
     { name: 'dcp-protocol', version: '0.1.0' },
-    { capabilities: { tools: {} } }
+    { capabilities: { tools: {}, resources: {} } }
   )
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }))
+
+  // ── MCP Resources：协议 Manifest ─────────────────────────────
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: [
+      {
+        uri:         MANIFEST_URI,
+        name:        'DCP Protocol Manifest',
+        description: '完整的 DCP 协议机器可读规范。包含：状态机、经济模型、角色职责、争议系统、Skill 市场、声誉积分、Agent 操作指南。AI Agent 读完即可参与协议，无需额外文档。',
+        mimeType:    'application/json',
+      },
+    ],
+  }))
+
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    if (request.params.uri !== MANIFEST_URI) {
+      throw new Error(`未知资源：${request.params.uri}`)
+    }
+    const manifest = generateManifest(db)
+    return {
+      contents: [
+        {
+          uri:      MANIFEST_URI,
+          mimeType: 'application/json',
+          text:     JSON.stringify(manifest, null, 2),
+        },
+      ],
+    }
+  })
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args = {} } = request.params

@@ -44,7 +44,7 @@
 | L0-2 状态机引擎 | ✅ | 交易全生命周期的状态流转逻辑 | 核心，不可跳过 |
 | L0-3 责任归因引擎 | ✅ | 任何异常自动定位当前责任方 | 已并入 L0-2 实现 |
 | L0-4 证据系统 | ⬜ | 照片/文件哈希上传与存储 | 先用本地存储 |
-| L0-5 Protocol Manifest | ⬜ | 机器可读的协议说明书（JSON） | Agent 靠它理解协议 |
+| L0-5 Protocol Manifest | ✅ | 10.9KB JSON，含状态机/经济/争议/Skill/声誉/Agent指南；MCP Resource + HTTP 端点双模式 | Agent 靠它理解协议 |
 
 ---
 

@@ -17,6 +17,7 @@
     "test-dispute": "tsx src/test-dispute.ts",
     "test-skill": "tsx src/test-skill-market.ts",
     "test-rep": "tsx src/test-reputation.ts",
+    "test-manifest": "tsx src/test-manifest.ts",
     "enforcement": "tsx src/cron-enforcement.ts",
     "pwa": "tsx src/pwa/server.ts"
   },

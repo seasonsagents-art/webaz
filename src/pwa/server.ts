@@ -39,6 +39,7 @@ import {
   getSearchBoost,
   getStakeDiscount,
 } from '../layer4-economics/L4-3-reputation/reputation-engine.js'
+import { generateManifest } from '../layer0-foundation/L0-5-manifest/manifest.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -428,7 +429,14 @@ app.delete('/api/skills/:id/subscribe', (req, res) => {
   res.json({ success: true })
 })
 
-// ─── 声誉 API ─────────────────────────────────────────────────
+// ─── Protocol Manifest（L0-5）────────────────────────────────
+
+// 公开端点：任何客户端都可发现协议规范
+app.get('/api/manifest', (_req, res) => {
+  res.json(generateManifest(db))
+})
+
+// 声誉 API ─────────────────────────────────────────────────────
 
 // 我的声誉
 app.get('/api/reputation', (req, res) => {

@@ -14,7 +14,8 @@
     "mcp": "tsx src/mcp.ts",
     "test-mcp": "tsx src/test-mcp-tools.ts",
     "demo": "tsx src/demo-agent.ts",
-    "test-dispute": "tsx src/test-dispute.ts"
+    "test-dispute": "tsx src/test-dispute.ts",
+    "enforcement": "tsx src/cron-enforcement.ts"
   },
   "keywords": [],
   "author": "",

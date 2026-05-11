@@ -15,7 +15,8 @@
     "test-mcp": "tsx src/test-mcp-tools.ts",
     "demo": "tsx src/demo-agent.ts",
     "test-dispute": "tsx src/test-dispute.ts",
-    "enforcement": "tsx src/cron-enforcement.ts"
+    "enforcement": "tsx src/cron-enforcement.ts",
+    "pwa": "tsx src/pwa/server.ts"
   },
   "keywords": [],
   "author": "",
@@ -24,10 +25,12 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.9.0",
+    "express": "^5.2.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "@types/express": "^5.0.6",
     "@types/node": "^25.6.2",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"

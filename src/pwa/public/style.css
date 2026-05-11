@@ -1,0 +1,262 @@
+/* DCP PWA — 移动优先 */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0 }
+
+:root {
+  --primary: #4f46e5;
+  --primary-light: #ede9fe;
+  --success: #059669;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --gray-50: #f9fafb;
+  --gray-100: #f3f4f6;
+  --gray-300: #d1d5db;
+  --gray-500: #6b7280;
+  --gray-700: #374151;
+  --gray-900: #111827;
+  --radius: 12px;
+  --shadow: 0 1px 3px rgba(0,0,0,.1), 0 1px 2px rgba(0,0,0,.06);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--gray-50);
+  color: var(--gray-900);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── 顶部导航 ── */
+.navbar {
+  background: #fff;
+  border-bottom: 1px solid var(--gray-100);
+  padding: 0 16px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.navbar-brand { font-size: 18px; font-weight: 700; color: var(--primary); text-decoration: none }
+.navbar-actions { display: flex; gap: 8px }
+
+/* ── 底部 Tab 栏 ── */
+.tabbar {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  background: #fff;
+  border-top: 1px solid var(--gray-100);
+  display: flex;
+  height: 60px;
+  z-index: 100;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.tab-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--gray-500);
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 8px 4px;
+  transition: color .15s;
+}
+.tab-item.active { color: var(--primary) }
+.tab-icon { font-size: 20px; line-height: 1 }
+
+/* ── 主内容区 ── */
+.main { padding: 16px 16px 80px; max-width: 640px; margin: 0 auto }
+
+/* ── 页面标题 ── */
+.page-title { font-size: 22px; font-weight: 700; margin-bottom: 16px }
+.page-sub { font-size: 14px; color: var(--gray-500); margin-bottom: 20px }
+
+/* ── 卡片 ── */
+.card {
+  background: #fff;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+/* ── 商品卡片 ── */
+.product-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px }
+.product-card {
+  background: #fff;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform .15s, box-shadow .15s;
+}
+.product-card:active { transform: scale(.97) }
+.product-img {
+  width: 100%; aspect-ratio: 1;
+  background: var(--gray-100);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 40px;
+}
+.product-body { padding: 10px }
+.product-name { font-size: 13px; font-weight: 600; line-height: 1.4; margin-bottom: 4px }
+.product-price { font-size: 16px; font-weight: 700; color: var(--primary) }
+.product-seller { font-size: 11px; color: var(--gray-500); margin-top: 2px }
+
+/* ── 搜索栏 ── */
+.search-bar {
+  display: flex; gap: 8px; margin-bottom: 16px;
+}
+.search-input {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid var(--gray-300);
+  border-radius: 99px;
+  font-size: 15px;
+  outline: none;
+}
+.search-input:focus { border-color: var(--primary) }
+
+/* ── 表单 ── */
+.form-group { margin-bottom: 16px }
+.form-label { font-size: 13px; font-weight: 600; color: var(--gray-700); margin-bottom: 6px; display: block }
+.form-control {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--gray-300);
+  border-radius: 10px;
+  font-size: 15px;
+  outline: none;
+  background: #fff;
+  transition: border-color .15s;
+}
+.form-control:focus { border-color: var(--primary) }
+textarea.form-control { min-height: 80px; resize: vertical }
+select.form-control { appearance: none }
+
+/* ── 按钮 ── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 12px 20px;
+  border-radius: 10px;
+  font-size: 15px; font-weight: 600;
+  border: none; cursor: pointer;
+  transition: opacity .15s, transform .1s;
+  width: 100%;
+}
+.btn:active { transform: scale(.97) }
+.btn-primary { background: var(--primary); color: #fff }
+.btn-success { background: var(--success); color: #fff }
+.btn-danger  { background: var(--danger);  color: #fff }
+.btn-outline { background: #fff; color: var(--primary); border: 1.5px solid var(--primary) }
+.btn-gray    { background: var(--gray-100); color: var(--gray-700) }
+.btn-sm { padding: 8px 16px; font-size: 13px; width: auto }
+.btn:disabled { opacity: .4; cursor: not-allowed }
+.btn-row { display: flex; gap: 8px }
+
+/* ── 状态徽章 ── */
+.badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 99px;
+  font-size: 12px; font-weight: 600;
+}
+.badge-blue    { background: #dbeafe; color: #1d4ed8 }
+.badge-yellow  { background: #fef3c7; color: #92400e }
+.badge-green   { background: #d1fae5; color: #065f46 }
+.badge-red     { background: #fee2e2; color: #991b1b }
+.badge-gray    { background: var(--gray-100); color: var(--gray-700) }
+.badge-purple  { background: var(--primary-light); color: var(--primary) }
+
+/* ── 订单列表 ── */
+.order-item { display: flex; gap: 12px; align-items: flex-start }
+.order-icon { font-size: 28px; line-height: 1; flex-shrink: 0 }
+.order-info { flex: 1; min-width: 0 }
+.order-title { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.order-meta  { font-size: 12px; color: var(--gray-500); margin-top: 3px }
+.order-amount { font-size: 15px; font-weight: 700; color: var(--primary); flex-shrink: 0 }
+
+/* ── 状态时间线 ── */
+.timeline { position: relative; padding-left: 24px }
+.timeline::before {
+  content: '';
+  position: absolute; left: 8px; top: 8px; bottom: 0;
+  width: 2px; background: var(--gray-100);
+}
+.timeline-item { position: relative; padding-bottom: 20px; font-size: 13px }
+.timeline-item::before {
+  content: '';
+  position: absolute; left: -20px; top: 4px;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 2px var(--primary);
+}
+.timeline-status { font-weight: 700; color: var(--gray-900) }
+.timeline-actor  { color: var(--gray-500) }
+.timeline-time   { color: var(--gray-300); font-size: 11px }
+.timeline-evidence { color: var(--success); font-size: 11px }
+
+/* ── 钱包卡片 ── */
+.wallet-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px }
+.wallet-item { background: var(--gray-50); border-radius: 10px; padding: 12px }
+.wallet-label { font-size: 11px; color: var(--gray-500); margin-bottom: 4px }
+.wallet-value { font-size: 20px; font-weight: 700; color: var(--gray-900) }
+.wallet-unit  { font-size: 12px; color: var(--gray-500); font-weight: 400 }
+
+/* ── 空状态 ── */
+.empty { text-align: center; padding: 48px 16px; color: var(--gray-500) }
+.empty-icon { font-size: 48px; margin-bottom: 12px }
+.empty-text { font-size: 15px }
+
+/* ── Alert ── */
+.alert {
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+.alert-error   { background: #fee2e2; color: #991b1b }
+.alert-success { background: #d1fae5; color: #065f46 }
+.alert-info    { background: var(--primary-light); color: var(--primary) }
+.alert-warning { background: #fef3c7; color: #92400e }
+
+/* ── 分割线 ── */
+.divider { height: 1px; background: var(--gray-100); margin: 16px 0 }
+
+/* ── 详情行 ── */
+.detail-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 14px }
+.detail-row:not(:last-child) { border-bottom: 1px solid var(--gray-100) }
+.detail-label { color: var(--gray-500) }
+.detail-value { font-weight: 600; text-align: right; max-width: 60% }
+
+/* ── 登录页 ── */
+.login-wrap { min-height: 100vh; display: flex; flex-direction: column; justify-content: center; padding: 32px 24px; }
+.login-logo { font-size: 48px; text-align: center; margin-bottom: 8px }
+.login-title { text-align: center; font-size: 24px; font-weight: 700; margin-bottom: 4px }
+.login-sub   { text-align: center; color: var(--gray-500); font-size: 14px; margin-bottom: 32px }
+
+/* ── Tab 切换 ── */
+.seg-ctrl { display: flex; background: var(--gray-100); border-radius: 10px; padding: 4px; margin-bottom: 16px }
+.seg-btn {
+  flex: 1; text-align: center; padding: 8px; border-radius: 8px;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+  border: none; background: none; color: var(--gray-500);
+  transition: all .15s;
+}
+.seg-btn.active { background: #fff; color: var(--primary); box-shadow: var(--shadow) }
+
+/* ── 加载态 ── */
+.loading { text-align: center; padding: 40px; color: var(--gray-500); font-size: 14px }
+@keyframes spin { to { transform: rotate(360deg) } }
+.spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--gray-300); border-top-color: var(--primary); border-radius: 50%; animation: spin .6s linear infinite; margin-right: 8px }
+
+/* ── 操作区域 ── */
+.action-area { background: #fff; border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; margin-top: 16px }
+.action-title { font-size: 13px; font-weight: 700; color: var(--gray-500); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 12px }

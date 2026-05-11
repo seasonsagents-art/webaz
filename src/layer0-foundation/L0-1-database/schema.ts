@@ -5,10 +5,12 @@
 
 import Database from 'better-sqlite3'
 import path from 'path'
-import { fileURLToPath } from 'url'
+import os from 'os'
+import fs from 'fs'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DB_PATH = path.join(__dirname, '../../../webaz.db')
+const DATA_DIR = path.join(os.homedir(), '.webaz')
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true })
+const DB_PATH = path.join(DATA_DIR, 'webaz.db')
 
 export function initDatabase(): Database.Database {
   const db = new Database(DB_PATH)

@@ -1,5 +1,5 @@
 /**
- * DCP Agent 交互演示
+ * WAZ Agent 交互演示
  * 模拟两个 Agent（卖家Agent + 买家Agent）通过 MCP 工具完成一笔真实交易
  * 这就是真实 Agent 调用时会发生的事情
  */
@@ -33,12 +33,12 @@ async function toolCall(name: string, result: unknown) {
 
 async function main() {
   console.clear()
-  console.log('🦞 DCP Protocol — Agent 交互演示')
+  console.log('🌐 WebAZ Protocol — Agent 交互演示')
   console.log('   两个 Agent 自动完成一笔真实去中心化交易')
   line()
 
   // ── STEP 1: 卖家 Agent 注册 ───────────────────────────────────
-  await agentSay('卖家', '🏪', '我要在 DCP 协议上开店，先注册一个卖家账号')
+  await agentSay('卖家', '🏪', '我要在 WAZ 协议上开店，先注册一个卖家账号')
 
   const sellerId = generateId('usr')
   const sellerKey = generateId('key')
@@ -49,7 +49,7 @@ async function main() {
   console.log(`   ✅ 注册成功！api_key 已保存`)
 
   // ── STEP 2: 卖家 Agent 上架商品 ────────────────────────────────
-  await agentSay('卖家', '🏪', '把我的拳头产品上架，定价 168 DCP，自动质押 15% 保证金')
+  await agentSay('卖家', '🏪', '把我的拳头产品上架，定价 168 WAZ，自动质押 15% 保证金')
 
   const productId = generateId('prd')
   const price = 168
@@ -59,7 +59,7 @@ async function main() {
   db.prepare('UPDATE wallets SET balance = balance - ?, staked = staked + ? WHERE user_id = ?').run(stake, stake, sellerId)
 
   await toolCall('dcp_list_product', { title: '竹编茶叶罐', price: 168, stock: 10 })
-  console.log(`   ✅ 商品已上架！质押 ${stake} DCP，买家现在可以搜索到`)
+  console.log(`   ✅ 商品已上架！质押 ${stake} WAZ，买家现在可以搜索到`)
 
   line()
 
@@ -72,7 +72,7 @@ async function main() {
   db.prepare('INSERT INTO wallets (user_id, balance) VALUES (?, 1000)').run(buyerId)
 
   await toolCall('dcp_register', { name: '陈先生', role: 'buyer' })
-  console.log(`   ✅ 注册成功！初始余额 1000 DCP`)
+  console.log(`   ✅ 注册成功！初始余额 1000 WAZ`)
 
   // ── STEP 4: 买家 Agent 搜索 ────────────────────────────────────
   await agentSay('买家', '🛒', '帮我搜索一下茶具，预算 200 以内')
@@ -85,7 +85,7 @@ async function main() {
 
   await toolCall('dcp_search', { query: '茶具', max_price: 200 })
   console.log(`   ← 找到 ${results.length} 件商品：`)
-  results.forEach(p => console.log(`      · ${p.title}  ¥${p.price} DCP  卖家：${p.seller_name}`))
+  results.forEach(p => console.log(`      · ${p.title}  ¥${p.price} WAZ  卖家：${p.seller_name}`))
 
   // ── STEP 5: 买家 Agent 下单 ────────────────────────────────────
   await agentSay('买家', '🛒', `好！买这个竹编茶叶罐，地址是上海市静安区南京西路×号`)
@@ -106,7 +106,7 @@ async function main() {
   transition(db, orderId, 'paid', buyerId, [], '买家付款，资金托管')
 
   await toolCall('dcp_place_order', { product_id: productId, shipping_address: '上海市...' })
-  console.log(`   ✅ 订单创建！${price} DCP 已托管`)
+  console.log(`   ✅ 订单创建！${price} WAZ 已托管`)
   console.log(`   ℹ️  卖家需在 24h 内接单，否则自动退款`)
 
   line()
@@ -189,14 +189,14 @@ async function main() {
   console.log(`\n   📋 订单 ${orderId}`)
   console.log(`   状态：${(statusInfo.order as Record<string, unknown>).status}（已完成）\n`)
 
-  console.log(`   💰 资金分配（总额 ${price} DCP）：`)
+  console.log(`   💰 资金分配（总额 ${price} WAZ）：`)
   const sellerW = db.prepare('SELECT * FROM wallets WHERE user_id = ?').get(sellerId) as Record<string, number>
   const logW    = db.prepare('SELECT * FROM wallets WHERE user_id = ?').get(logisticsId) as Record<string, number>
   const buyerW  = db.prepare('SELECT * FROM wallets WHERE user_id = ?').get(buyerId) as Record<string, number>
-  console.log(`      卖家（竹韵手工坊）：+${sellerAmount} DCP (${((sellerAmount/price)*100).toFixed(0)}%)  总余额：${sellerW.balance.toFixed(2)}`)
-  console.log(`      物流（顺丰小哥）：  +${logisticsFee} DCP (5%)   总余额：${logW.balance.toFixed(2)}`)
-  console.log(`      协议费：           -${protocolFee} DCP (2%)`)
-  console.log(`      买家（陈先生）：   -${price} DCP         总余额：${buyerW.balance.toFixed(2)}`)
+  console.log(`      卖家（竹韵手工坊）：+${sellerAmount} WAZ (${((sellerAmount/price)*100).toFixed(0)}%)  总余额：${sellerW.balance.toFixed(2)}`)
+  console.log(`      物流（顺丰小哥）：  +${logisticsFee} WAZ (5%)   总余额：${logW.balance.toFixed(2)}`)
+  console.log(`      协议费：           -${protocolFee} WAZ (2%)`)
+  console.log(`      买家（陈先生）：   -${price} WAZ         总余额：${buyerW.balance.toFixed(2)}`)
 
   console.log(`\n   📜 完整状态历史（每步都有链上记录）：`)
   for (const h of statusInfo.history as Record<string, unknown>[]) {
@@ -206,7 +206,7 @@ async function main() {
   }
 
   line()
-  console.log('\n🎉 这就是 DCP 协议的第一笔真实交易！')
+  console.log('\n🎉 这就是 WAZ 协议的第一笔真实交易！')
   console.log()
   console.log('   用户做了什么：告诉 Agent「买这个」「确认收货」')
   console.log('   Agent 做了什么：处理所有协议交互、证据上传、状态流转')

@@ -3,7 +3,7 @@
 
 最后更新：2026-05-11
 当前阶段：Phase 0 — 概念验证
-当前焦点：L1-1 MCP Server 核心
+当前焦点：Phase 0 完成 ✅ — 下阶段：L2-6 通知系统 + 对外演示准备
 
 ---
 
@@ -52,13 +52,13 @@
 
 | 模块 | 状态 | 说明 | 关键决策 |
 |------|------|------|----------|
-| L1-1 MCP Server 核心 | ⬜ | Agent 调用协议的入口 | 用 @modelcontextprotocol/sdk |
-| L1-2 工具：搜索商品 | ⬜ | Agent 可搜索可用商品 | 第一个对外工具 |
-| L1-3 工具：下单 | ⬜ | Agent 代理买家完成下单 | 依赖 L0-2 |
-| L1-4 工具：查询状态 | ⬜ | 查订单/物流/争议状态 | 依赖 L0-2 |
-| L1-5 工具：上架商品 | ⬜ | 卖家 Agent 发布商品 | 依赖 L0-1 |
-| L1-6 工具：确认/异议 | ⬜ | 买家确认收货或发起争议 | 依赖 L0-3 |
-| L1-7 Agent 身份验证 | ⬜ | Agent 代表哪个用户操作 | 先用 API Key 简化 |
+| L1-1 MCP Server 核心 | ✅ | Agent 调用协议的入口 | 已注册到 Claude Code |
+| L1-2 工具：搜索商品 | ✅ | Agent 可搜索可用商品 | dcp_search |
+| L1-3 工具：下单 | ✅ | Agent 代理买家完成下单 | dcp_place_order |
+| L1-4 工具：查询状态 | ✅ | 查订单/物流/争议状态 | dcp_get_status |
+| L1-5 工具：上架商品 | ✅ | 卖家 Agent 发布商品 | dcp_list_product |
+| L1-6 工具：确认/异议 | ✅ | 买家确认收货或发起争议 | dcp_update_order |
+| L1-7 Agent 身份验证 | ✅ | Agent 代表哪个用户操作 | api_key 机制 |
 
 ---
 
@@ -194,7 +194,8 @@
 2. ✅ 安装依赖（TypeScript + MCP SDK + SQLite）
 3. ✅ 建立数据库 Schema（L0-1）— 8张表全部就绪
 4. ✅ 状态机引擎（L0-2）+ 责任归因（L0-3）
-5. 👉 下一步：MCP Server 核心（L1-1）
+5. ✅ MCP Server（L1-1 至 L1-7）+ 收益分配（L4-1）
+6. 👉 Phase 0 目标全部完成，MCP 已注册到 Claude Code
 
 ---
 

@@ -1,9 +1,9 @@
 # DCP — Decentralized Commerce Protocol
 # 项目大脑 · 每次新对话开始时把这个文件给 Claude
 
-最后更新：2026-05-11
-当前阶段：Phase 0 — 概念验证
-当前焦点：Phase 0 完成 ✅ — 下阶段：L2-6 通知系统 + 对外演示准备
+最后更新：2026-05-07
+当前阶段：Phase 0 — 概念验证 ✅ 全部完成
+当前焦点：Phase 1 准备 — L2-6 通知系统 + L3 争议系统 + 录屏演示准备
 
 ---
 
@@ -185,17 +185,34 @@
 | 2026-05-11 | 完成完整系统设计和模块地图 | 尚未写任何代码 |
 | 2026-05-11 | L0-1 数据库 Schema 完成 | 8张表，测试通过，git commit 9acb18a |
 | 2026-05-11 | L0-2+L0-3 状态机+责任归因完成 | 17条转移规则，超时判责，git commit b767ba3 |
+| 2026-05-07 | MCP Server 全部8个工具完成（L1-1~L1-7） | dcp_info/register/search/list/order/update/status/wallet |
+| 2026-05-07 | Phase 0 第一笔真实交易跑通 ✅ | npm run demo 成功完成完整交易流程，资金自动结算 |
 
 ---
 
 ## 当前待办（下次会话从这里开始）
 
+### Phase 0 全部完成 ✅
 1. ✅ 初始化项目目录结构
 2. ✅ 安装依赖（TypeScript + MCP SDK + SQLite）
 3. ✅ 建立数据库 Schema（L0-1）— 8张表全部就绪
 4. ✅ 状态机引擎（L0-2）+ 责任归因（L0-3）
 5. ✅ MCP Server（L1-1 至 L1-7）+ 收益分配（L4-1）
-6. 👉 Phase 0 目标全部完成，MCP 已注册到 Claude Code
+6. ✅ demo-agent.ts 跑通第一笔完整交易（卖家+买家+物流 3个Agent参与）
+
+### Phase 1 下一步
+7. 👉 L2-6 通知系统：状态变更时推送给相关 Agent/用户
+8. 👉 L3-1 争议触发：买家发起异议的入口工具（dcp_dispute）
+9. 👉 L3-3 超时自动判责：定时任务定期调用 checkTimeouts()
+10. 👉 录屏演示：`npm run demo` 流程录屏，准备对外展示
+11. 👉 PWA 前端：手机浏览器可访问的轻量 UI
+
+### 体验 MCP 工具（在对话中真实调用 dcp_* 工具）
+```bash
+cd /Users/holden/dcp
+claude   # 在 dcp 目录开新 Claude Code 会话
+```
+在新会话里说"帮我注册一个买家账号"，Claude 会真实调用 dcp_register 工具
 
 ---
 

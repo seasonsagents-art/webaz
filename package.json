@@ -1,18 +1,17 @@
 {
-  "name": "webaz",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "directories": {
-    "doc": "docs",
-    "test": "tests"
+  "name": "@seasonkoh/webaz",
+  "version": "0.1.0",
+  "description": "Agent-native decentralized commerce protocol. Humans and AI agents trade on the same protocol via MCP tools.",
+  "main": "dist/mcp.js",
+  "bin": {
+    "webaz": "dist/mcp.js"
   },
+  "mcpName": "webaz",
   "scripts": {
-    "test": "echo 'no tests yet'",
-    "dev": "tsx src/index.ts",
     "build": "tsc",
+    "prepare": "npm run build",
+    "dev": "tsx src/index.ts",
     "mcp": "tsx src/mcp.ts",
-    "test-mcp": "tsx src/test-mcp-tools.ts",
     "demo": "tsx src/demo-agent.ts",
     "test-dispute": "tsx src/test-dispute.ts",
     "test-skill": "tsx src/test-skill-market.ts",
@@ -21,10 +20,27 @@
     "enforcement": "tsx src/cron-enforcement.ts",
     "pwa": "tsx src/pwa/server.ts"
   },
-  "keywords": [],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ai-agent",
+    "commerce",
+    "decentralized",
+    "claude",
+    "llm-tools"
+  ],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
+  "homepage": "https://github.com/seasonsagents-art/webaz",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/seasonsagents-art/webaz.git"
+  },
   "type": "module",
+  "files": [
+    "dist/",
+    "README.md"
+  ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.9.0",
@@ -37,5 +53,8 @@
     "@types/node": "^25.6.2",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

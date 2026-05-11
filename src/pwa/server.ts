@@ -201,7 +201,7 @@ app.get('/api/orders/:id', (req, res) => {
     const evidenceItems = ids.length
       ? db.prepare(`SELECT description, type FROM evidence WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids)
       : []
-    return { ...h, evidence_items: evidenceItems }
+    return { ...h, evidence_items: evidenceItems } as Record<string, unknown> & { evidence_items: unknown[] }
   })
 
   // 物流跟踪摘要：从历史中提取所有物流操作的证据

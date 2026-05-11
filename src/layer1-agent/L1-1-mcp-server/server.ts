@@ -54,6 +54,7 @@ import {
   unsubscribeSkill,
   getMySubscriptions,
   formatSkillForAgent,
+  shouldAutoAccept,
   SKILL_TYPE_META,
   type SkillType,
 } from '../../layer4-economics/L4-4-skill-market/skill-engine.js'
@@ -462,11 +463,12 @@ function handleSearch(args: Record<string, unknown>) {
   }
 
   // 按声誉权重排序：先排原始排序，再按卖家声誉加权
+  type SortedProduct = Record<string, unknown> & { _boost: number; _rep_level: string; _rep_points: number }
   const sorted = products
     .map((p) => {
       const boost = getSearchBoost(db, p.seller_id as string)
       const rep = db.prepare('SELECT total_points, level FROM reputation_scores WHERE user_id = ?').get(p.seller_id as string) as { total_points: number; level: string } | undefined
-      return { ...p, _boost: boost, _rep_level: rep?.level ?? 'new', _rep_points: rep?.total_points ?? 0 }
+      return { ...p, _boost: boost, _rep_level: rep?.level ?? 'new', _rep_points: rep?.total_points ?? 0 } as SortedProduct
     })
     .sort((a, b) => b._boost - a._boost)
 

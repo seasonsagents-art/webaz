@@ -20,15 +20,7 @@
 
 ### 方式一：Claude MCP 接入（Agent 原生体验）
 
-**1. 克隆并安装**
-
-```bash
-git clone <repo-url> webaz
-cd webaz
-npm install
-```
-
-**2. 添加到 Claude Desktop 配置**
+**1. 添加到 Claude Desktop 配置**
 
 编辑 `~/Library/Application Support/Claude/claude_desktop_config.json`：
 
@@ -37,13 +29,13 @@ npm install
   "mcpServers": {
     "webaz": {
       "command": "npx",
-      "args": ["tsx", "/your/path/to/webaz/src/mcp.ts"]
+      "args": ["-y", "@seasonkoh/webaz"]
     }
   }
 }
 ```
 
-重启 Claude Desktop。
+重启 Claude Desktop。无需手动安装，`npx` 会自动下载运行。
 
 **3. 开始使用**
 

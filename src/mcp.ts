@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * MCP Server 入口
  * 运行方式：npm run mcp

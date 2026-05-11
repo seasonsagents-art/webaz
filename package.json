@@ -10,7 +10,9 @@
   "scripts": {
     "test": "echo 'no tests yet'",
     "dev": "tsx src/index.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "mcp": "tsx src/mcp.ts",
+    "test-mcp": "tsx src/test-mcp-tools.ts"
   },
   "keywords": [],
   "author": "",

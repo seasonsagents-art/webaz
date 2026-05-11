@@ -13,7 +13,8 @@
     "build": "tsc",
     "mcp": "tsx src/mcp.ts",
     "test-mcp": "tsx src/test-mcp-tools.ts",
-    "demo": "tsx src/demo-agent.ts"
+    "demo": "tsx src/demo-agent.ts",
+    "test-dispute": "tsx src/test-dispute.ts"
   },
   "keywords": [],
   "author": "",

@@ -160,16 +160,16 @@ export const VALID_TRANSITIONS: Record<string, Transition> = {
 
   // ── 仲裁结束 ──────────────────────────────────────────────
   'disputed→completed': {
-    allowedRoles: ['arbitrator'],
-    requiresEvidence: true,
+    allowedRoles: ['arbitrator', 'system'],  // system = 超时自动裁定
+    requiresEvidence: false,
     evidenceHint: '上传仲裁裁定书',
-    description: '仲裁员完成裁定，执行处置结果'
+    description: '仲裁员完成裁定，释放资金给卖家'
   },
   'disputed→cancelled': {
-    allowedRoles: ['arbitrator'],
-    requiresEvidence: true,
+    allowedRoles: ['arbitrator', 'system'],  // system = 超时自动裁定
+    requiresEvidence: false,
     evidenceHint: '上传仲裁裁定书',
-    description: '仲裁裁定取消交易，全额退款'
+    description: '仲裁裁定取消交易，全额退款给买家'
   },
 
   // ── 正常完成 ──────────────────────────────────────────────

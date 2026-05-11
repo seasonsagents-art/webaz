@@ -27,12 +27,22 @@ import {
   getOrderStatus,
   initSystemUser,
 } from '../../layer0-foundation/L0-2-state-machine/engine.js'
+import {
+  initDisputeSchema,
+  createDispute,
+  respondToDispute,
+  arbitrateDispute,
+  getDisputeDetails,
+  getOrderDispute,
+  getOpenDisputes,
+} from '../../layer3-trust/L3-1-dispute-engine/dispute-engine.js'
 import { requireAuth } from './auth.js'
 
 // ─── 初始化 ──────────────────────────────────────────────────
 
 const db: Database.Database = initDatabase()
 initSystemUser(db)
+initDisputeSchema(db)  // L3：为 disputes 表添加争议引擎所需列
 
 // ─── 工具定义（Agent 读这些来理解如何使用协议）────────────────
 
@@ -194,6 +204,52 @@ const TOOLS = [
         api_key: { type: 'string', description: '你的 api_key' },
       },
       required: ['api_key'],
+    },
+  },
+  {
+    name: 'dcp_dispute',
+    description: `管理争议流程（L3 争议系统）。
+
+当买家认为货不对版、货损、卖家欺诈时，可通过 dcp_update_order action=dispute 发起争议，
+然后用本工具进行后续操作。
+
+协议保障机制（无需人工干预）：
+- 被诉方有 48 小时提交反驳证据，否则协议自动判发起方胜诉
+- 仲裁员有 120 小时做出裁定，否则协议默认退款给买家
+- 裁定一旦执行，资金立即自动分配，无法撤销
+
+action 说明：
+- view：查看争议详情（任何参与方可调用）
+- list_open：查看所有待处理争议（仅仲裁员）
+- respond：被诉方提交反驳证据（必须在 48h 截止时间前）
+- arbitrate：仲裁员做出裁定并执行资金处置
+
+ruling 裁定选项（arbitrate 时使用）：
+- refund_buyer：全额退款给买家，扣押卖家部分保证金
+- release_seller：资金释放给卖家（卖家胜诉）
+- partial_refund：部分退款（需指定 refund_amount）`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        api_key: { type: 'string', description: '操作者的 api_key' },
+        action: {
+          type: 'string',
+          enum: ['view', 'list_open', 'respond', 'arbitrate'],
+          description: '要执行的操作',
+        },
+        dispute_id: { type: 'string', description: '争议 ID（respond/arbitrate 时必填，view 时与 order_id 二选一）' },
+        order_id: { type: 'string', description: '订单 ID（view 时可替代 dispute_id）' },
+        notes: { type: 'string', description: '回应说明 / 反驳理由（respond 时填写）' },
+        evidence_description: { type: 'string', description: '证据描述（respond 时建议填写）' },
+        ruling: {
+          type: 'string',
+          enum: ['refund_buyer', 'release_seller', 'partial_refund'],
+          description: '裁定结果（arbitrate 时必填）',
+        },
+        refund_amount: { type: 'number', description: '部分退款金额，仅 ruling=partial_refund 时使用' },
+        ruling_reason: { type: 'string', description: '裁定理由（arbitrate 时必填，将永久记录在链上）' },
+      },
+      required: ['api_key', 'action'],
     },
   },
 ]
@@ -539,6 +595,23 @@ function handleUpdateOrder(args: Record<string, unknown>) {
     return { error: result.error }
   }
 
+  // 如果是 dispute，写入 disputes 表（L3-1）
+  if (toStatus === 'disputed') {
+    const disputeResult = createDispute(db, orderId, user.id, notes || evidenceDesc || '买家发起争议', evidenceIds)
+    if (disputeResult.success) {
+      return {
+        success: true,
+        new_status: 'disputed',
+        dispute_id: disputeResult.disputeId,
+        message: disputeResult.message,
+        respond_deadline: disputeResult.respondDeadline,
+        next: `用 dcp_dispute action=view dispute_id=${disputeResult.disputeId} 查看争议详情`,
+      }
+    }
+    // 争议记录写入失败不影响状态，仍返回成功
+    return { success: true, new_status: 'disputed', message: '争议已发起，资金已冻结', warning: disputeResult.error }
+  }
+
   // 如果是 confirmed，自动触发结算
   if (toStatus === 'confirmed') {
     const sysUser = db
@@ -629,6 +702,124 @@ function handleWallet(args: Record<string, unknown>) {
   }
 }
 
+// ─── 争议处理 ─────────────────────────────────────────────────
+
+function handleDispute(args: Record<string, unknown>) {
+  const auth = requireAuth(db, args.api_key as string)
+  if ('error' in auth) return auth
+  const { user } = auth
+
+  const action = args.action as string
+
+  // ── 查看争议详情 ────────────────────────────────────────────
+  if (action === 'view') {
+    let dispute = args.dispute_id
+      ? getDisputeDetails(db, args.dispute_id as string)
+      : args.order_id
+        ? getOrderDispute(db, args.order_id as string)
+        : null
+
+    if (!dispute) return { error: '找不到争议记录，请提供 dispute_id 或 order_id' }
+
+    const evidenceList = (orderId: string, uploaderRole: string) =>
+      db.prepare(`
+        SELECT e.description, e.type, e.file_hash, e.created_at, u.name as uploader
+        FROM evidence e JOIN users u ON e.uploader_id = u.id
+        WHERE e.order_id = ? AND u.role = ?
+        ORDER BY e.created_at ASC
+      `).all(orderId, uploaderRole) as Record<string, unknown>[]
+
+    return {
+      dispute_id: dispute.id,
+      order_id: dispute.order_id,
+      status: dispute.status,
+      initiator: `${dispute.initiator_name}（${dispute.initiator_role}）`,
+      defendant: `${dispute.defendant_name}（${dispute.defendant_role}）`,
+      reason: dispute.reason,
+      respond_deadline: dispute.respond_deadline,
+      arbitrate_deadline: dispute.arbitrate_deadline,
+      plaintiff_evidence: evidenceList(dispute.order_id, dispute.initiator_role as string),
+      defendant_notes: dispute.defendant_notes ?? '（被诉方尚未提交回应）',
+      defendant_evidence: JSON.parse((dispute.defendant_evidence_ids as string) || '[]'),
+      ruling: dispute.ruling_type
+        ? { type: dispute.ruling_type, refund_amount: dispute.refund_amount, reason: dispute.verdict_reason }
+        : null,
+      resolved_at: dispute.resolved_at,
+    }
+  }
+
+  // ── 仲裁员查看所有待处理争议 ───────────────────────────────
+  if (action === 'list_open') {
+    if (user.role !== 'arbitrator') {
+      return { error: '只有仲裁员可以查看所有待处理争议' }
+    }
+    const disputes = getOpenDisputes(db)
+    return {
+      open_count: disputes.length,
+      disputes: disputes.map(d => ({
+        dispute_id: d.id,
+        order_id: d.order_id,
+        status: d.status,
+        initiator: `${d.initiator_name}（${d.initiator_role}）`,
+        defendant: `${d.defendant_name}（${d.defendant_role}）`,
+        reason: d.reason,
+        amount: `${d.total_amount} DCP`,
+        respond_deadline: d.respond_deadline,
+        arbitrate_deadline: d.arbitrate_deadline,
+        created_at: d.created_at,
+      }))
+    }
+  }
+
+  // ── 被诉方提交反驳 ──────────────────────────────────────────
+  if (action === 'respond') {
+    if (!args.dispute_id) return { error: '请提供 dispute_id' }
+
+    // 如有证据描述，先创建证据记录
+    const evidenceIds: string[] = []
+    if (args.evidence_description) {
+      const dispute = getDisputeDetails(db, args.dispute_id as string)
+      if (dispute) {
+        const eid = generateId('evt')
+        db.prepare(`
+          INSERT INTO evidence (id, order_id, uploader_id, type, description, file_hash)
+          VALUES (?, ?, ?, 'description', ?, ?)
+        `).run(eid, dispute.order_id, user.id, args.evidence_description as string, `hash_${Date.now()}`)
+        evidenceIds.push(eid)
+      }
+    }
+
+    return respondToDispute(
+      db,
+      args.dispute_id as string,
+      user.id,
+      (args.notes as string) ?? '',
+      evidenceIds
+    )
+  }
+
+  // ── 仲裁员裁定 ─────────────────────────────────────────────
+  if (action === 'arbitrate') {
+    if (!args.dispute_id) return { error: '请提供 dispute_id' }
+    if (!args.ruling) return { error: '请提供 ruling（refund_buyer / release_seller / partial_refund）' }
+    if (!args.ruling_reason) return { error: '请提供 ruling_reason（裁定理由将永久记录）' }
+    if (args.ruling === 'partial_refund' && !args.refund_amount) {
+      return { error: 'partial_refund 需要提供 refund_amount' }
+    }
+
+    return arbitrateDispute(
+      db,
+      args.dispute_id as string,
+      user.id,
+      args.ruling as 'refund_buyer' | 'release_seller' | 'partial_refund',
+      args.ruling_reason as string,
+      args.refund_amount as number | undefined
+    )
+  }
+
+  return { error: `未知 action：${action}` }
+}
+
 // ─── 结算逻辑（买家确认后自动执行）──────────────────────────────
 
 function settleOrder(db: Database.Database, orderId: string) {
@@ -692,6 +883,7 @@ export async function startMCPServer() {
         case 'dcp_update_order':  result = handleUpdateOrder(args); break
         case 'dcp_get_status':    result = handleGetStatus(args); break
         case 'dcp_wallet':        result = handleWallet(args); break
+        case 'dcp_dispute':       result = handleDispute(args); break
         default: result = { error: `未知工具：${name}` }
       }
     } catch (err) {

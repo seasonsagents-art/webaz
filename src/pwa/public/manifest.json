@@ -1,6 +1,6 @@
 {
-  "name": "DCP 协议",
-  "short_name": "DCP",
+  "name": "WebAZ",
+  "short_name": "WebAZ",
   "description": "去中心化商业协议",
   "start_url": "/",
   "display": "standalone",

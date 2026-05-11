@@ -29,13 +29,15 @@ export interface DisputeRecord {
   status: 'open' | 'in_review' | 'resolved' | 'dismissed'
   defendant_notes: string | null
   defendant_evidence_ids: string   // JSON 数组
-  respond_deadline: string | null  // 被告方回应截止
-  arbitrate_deadline: string | null // 仲裁截止
+  respond_deadline: string | null
+  arbitrate_deadline: string | null
   assigned_arbitrators: string     // JSON 数组
   verdict: string | null
   verdict_reason: string | null
-  ruling_type: string | null       // refund_buyer / release_seller / partial_refund
+  ruling_type: string | null
   refund_amount: number | null
+  party_evidence_ids: string       // JSON 数组（参与方主动举证）
+  liability_parties: string        // JSON 数组（责任分配裁定）
   created_at: string
   resolved_at: string | null
 }
@@ -55,17 +57,56 @@ export function initDisputeSchema(db: Database.Database): void {
     `ALTER TABLE disputes ADD COLUMN arbitrate_deadline TEXT`,
     `ALTER TABLE disputes ADD COLUMN ruling_type TEXT`,
     `ALTER TABLE disputes ADD COLUMN refund_amount REAL`,
+    // Phase 1 新增：多方举证 + 责任分配
+    `ALTER TABLE disputes ADD COLUMN party_evidence_ids TEXT DEFAULT '[]'`,
+    `ALTER TABLE disputes ADD COLUMN liability_parties TEXT DEFAULT '[]'`,
   ]
   for (const stmt of newColumns) {
     try { db.exec(stmt) } catch { /* 列已存在，跳过 */ }
   }
 }
 
+/** 任意参与方（非被告）主动提交证据 */
+export function addPartyEvidence(
+  db: Database.Database,
+  disputeId: string,
+  submitterId: string,
+  description: string,
+  evidenceType: EvidenceType = 'text',
+  fileHash?: string
+): { success: boolean; evidenceId?: string; anchorHash?: string; error?: string } {
+  const dispute = db.prepare('SELECT * FROM disputes WHERE id = ?').get(disputeId) as DisputeRecord | undefined
+  if (!dispute) return { success: false, error: '争议不存在' }
+  if (dispute.status === 'resolved' || dispute.status === 'dismissed') {
+    return { success: false, error: '该争议已结案' }
+  }
+
+  const order = db.prepare('SELECT buyer_id, seller_id, logistics_id FROM orders WHERE id = ?')
+    .get(dispute.order_id) as Record<string, string | null> | undefined
+  const partyIds = [order?.buyer_id, order?.seller_id, order?.logistics_id,
+                    dispute.initiator_id, dispute.defendant_id].filter(Boolean) as string[]
+  if (!partyIds.includes(submitterId)) {
+    return { success: false, error: '你不是此争议的参与方' }
+  }
+
+  const anchorHash = fileHash || generateAnchorHash(description)
+  const eid = generateId('evt')
+  db.prepare(
+    `INSERT INTO evidence (id, order_id, uploader_id, type, description, file_hash) VALUES (?,?,?,?,?,?)`
+  ).run(eid, dispute.order_id, submitterId, evidenceType, description, anchorHash)
+
+  const existing: string[] = JSON.parse(dispute.party_evidence_ids || '[]')
+  existing.push(eid)
+  db.prepare(`UPDATE disputes SET party_evidence_ids = ? WHERE id = ?`).run(JSON.stringify(existing), disputeId)
+
+  return { success: true, evidenceId: eid, anchorHash }
+}
+
 // ─── L3-1 争议触发 ────────────────────────────────────────────
 
 /**
  * 创建争议记录
- * 在 dcp_update_order action=dispute 之后调用，写入 disputes 表
+ * 在 webaz_update_order action=dispute 之后调用，写入 disputes 表
  */
 export function createDispute(
   db: Database.Database,
@@ -77,7 +118,7 @@ export function createDispute(
 
   const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as Record<string, unknown> | undefined
   if (!order) return { success: false, error: `订单不存在：${orderId}` }
-  if (order.status !== 'disputed') return { success: false, error: '订单尚未进入争议状态，请先调用 dcp_update_order action=dispute' }
+  if (order.status !== 'disputed') return { success: false, error: '订单尚未进入争议状态，请先调用 webaz_update_order action=dispute' }
 
   // 检查是否已有进行中的争议
   const existing = db.prepare(
@@ -171,13 +212,21 @@ export function respondToDispute(
 /**
  * 仲裁员做出裁定，并自动执行资金处置
  */
+export interface LiabilityEntry {
+  user_id: string
+  role: string
+  amount: number          // 该方应承担的赔偿金额
+  insurance_cap?: number  // 保险兜底上限（物流方可用），超额由协议垫付
+}
+
 export function arbitrateDispute(
   db: Database.Database,
   disputeId: string,
   arbitratorId: string,
-  ruling: 'refund_buyer' | 'release_seller' | 'partial_refund',
+  ruling: 'refund_buyer' | 'release_seller' | 'partial_refund' | 'liability_split',
   reason: string,
-  refundAmount?: number
+  refundAmount?: number,
+  liabilityParties?: LiabilityEntry[]
 ): { success: boolean; error?: string; message?: string; settlement?: Record<string, unknown> } {
 
   const dispute = db.prepare('SELECT * FROM disputes WHERE id = ?').get(disputeId) as DisputeRecord | undefined
@@ -193,8 +242,44 @@ export function arbitrateDispute(
   }
 
   // 执行资金处置
-  const settlement = executeSettlement(db, dispute.order_id, ruling, refundAmount)
+  const settlement = ruling === 'liability_split' && liabilityParties
+    ? executeLiabilitySplit(db, dispute.order_id, liabilityParties, refundAmount)
+    : executeSettlement(db, dispute.order_id, ruling, refundAmount)
   if (!settlement.success) return { success: false, error: settlement.error }
+
+  // 收取仲裁费（败诉方付 1%，最低 1 WAZ）
+  const order = db.prepare('SELECT total_amount, buyer_id, seller_id FROM orders WHERE id = ?')
+    .get(dispute.order_id) as { total_amount: number; buyer_id: string; seller_id: string } | undefined
+  const sysUser = db.prepare("SELECT id FROM users WHERE id = 'sys_protocol'").get() as { id: string }
+  const arbFees: Record<string, number> = {}
+
+  if (order) {
+    const amt = order.total_amount
+    if (ruling === 'refund_buyer') {
+      // 卖家败诉
+      const f = chargeArbitrationFee(db, order.seller_id, amt, arbitratorId, sysUser.id)
+      if (f.fee > 0) arbFees[order.seller_id] = f.fee
+    } else if (ruling === 'release_seller') {
+      // 买家败诉
+      const f = chargeArbitrationFee(db, order.buyer_id, amt, arbitratorId, sysUser.id)
+      if (f.fee > 0) arbFees[order.buyer_id] = f.fee
+    } else if (ruling === 'partial_refund') {
+      // 折中：双方各付 0.5%（最低各 0.5 WAZ，实际按 chargeArbitrationFee 的 min 逻辑）
+      const halfAmt = amt * 0.5
+      const fb = chargeArbitrationFee(db, order.buyer_id, halfAmt, arbitratorId, sysUser.id)
+      const fs = chargeArbitrationFee(db, order.seller_id, halfAmt, arbitratorId, sysUser.id)
+      if (fb.fee > 0) arbFees[order.buyer_id] = fb.fee
+      if (fs.fee > 0) arbFees[order.seller_id] = fs.fee
+    } else if (ruling === 'liability_split' && liabilityParties) {
+      // 各责任方按比例分担
+      const totalLiability = liabilityParties.reduce((s, p) => s + p.amount, 0) || amt
+      for (const p of liabilityParties) {
+        const share = (p.amount / totalLiability) * amt
+        const f = chargeArbitrationFee(db, p.user_id, share, arbitratorId, sysUser.id)
+        if (f.fee > 0) arbFees[p.user_id] = (arbFees[p.user_id] ?? 0) + f.fee
+      }
+    }
+  }
 
   // 更新争议记录
   db.prepare(`
@@ -204,18 +289,210 @@ export function arbitrateDispute(
       verdict_reason = ?,
       ruling_type = ?,
       refund_amount = ?,
+      liability_parties = ?,
       resolved_at = datetime('now')
     WHERE id = ?
-  `).run(ruling, reason, ruling, refundAmount ?? null, disputeId)
+  `).run(
+    ruling, reason, ruling, refundAmount ?? null,
+    JSON.stringify(liabilityParties ?? []),
+    disputeId
+  )
 
   return {
     success: true,
     message: `裁定已执行：${getRulingDescription(ruling, refundAmount)}`,
-    settlement: settlement.detail,
+    settlement: {
+      ...settlement.detail,
+      arbitration_fees: arbFees,
+    },
+  }
+}
+
+/**
+ * 执行多方责任分配结算
+ *
+ * 资金流模型：
+ *  A) 托管资金（买家原款）：
+ *     - 买家获得 actualRefund（从托管中拨还）
+ *     - 卖家获得 totalAmount - actualRefund（托管剩余，若无责任则取回全额）
+ *
+ *  B) 责任罚款（惩戒性）：每个责任方按各自金额被扣款，扣款进入协议金库
+ *     - 先扣质押，不足再扣余额
+ *     - 物流方可设 insurance_cap：超出上限的部分由协议金库垫付（买家仍足额赔付）
+ *
+ *  C) 卖家商品质押：
+ *     - 若卖家未列入责任方，质押全额返还
+ *     - 若卖家列入责任方，按责任金额比例扣罚，剩余返还
+ *
+ * 这样确保托管资金守恒（无凭空创造/销毁），责任方额外受罚（去向：sys_protocol）。
+ */
+function executeLiabilitySplit(
+  db: Database.Database,
+  orderId: string,
+  liabilityParties: LiabilityEntry[],
+  buyerRefund?: number
+): { success: boolean; error?: string; detail?: Record<string, unknown> } {
+  const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as Record<string, unknown> | undefined
+  if (!order) return { success: false, error: '订单不存在' }
+
+  const totalAmount = order.total_amount as number
+  const buyerId     = order.buyer_id as string
+  const sellerId    = order.seller_id as string
+  const sysUser     = db.prepare("SELECT id FROM users WHERE id = 'sys_protocol'").get() as { id: string }
+
+  const product = db.prepare('SELECT stake_amount FROM products WHERE id = ?')
+    .get(order.product_id as string) as { stake_amount: number } | undefined
+  const stakeAmount = product?.stake_amount ?? 0
+
+  const actualRefund = Math.min(buyerRefund ?? totalAmount, totalAmount)
+  const sellerEscrowShare = Math.round((totalAmount - actualRefund) * 100) / 100
+
+  // 预先计算各责任方实际扣款（资金守恒：责任方扣款 = 协议金库收入）
+  const settled: Array<{
+    userId: string; role: string; owed: number
+    actualPenalty: number; insuranceCovered: number
+  }> = []
+
+  for (const entry of liabilityParties) {
+    const wallet = db.prepare('SELECT balance, staked FROM wallets WHERE user_id = ?')
+      .get(entry.user_id) as { balance: number; staked: number } | undefined
+    const available = (wallet?.balance ?? 0) + (wallet?.staked ?? 0)
+
+    let actualPenalty: number
+    let insuranceCovered = 0
+
+    if (entry.insurance_cap !== undefined && entry.insurance_cap < entry.amount) {
+      // 有保险上限：责任方最多赔 insurance_cap，不足部分由协议垫付
+      actualPenalty = Math.min(entry.insurance_cap, available)
+      insuranceCovered = entry.amount - entry.insurance_cap  // 协议垫付
+    } else {
+      // 无保险上限：以实际可用余额为上限
+      actualPenalty = Math.min(entry.amount, available)
+      insuranceCovered = entry.amount - actualPenalty       // 余额不足部分
+    }
+
+    settled.push({ userId: entry.user_id, role: entry.role, owed: entry.amount, actualPenalty, insuranceCovered })
+  }
+
+  // 卖家是否在责任方列表中
+  const sellerLiability = liabilityParties.find(p => p.user_id === sellerId)
+
+  db.transaction(() => {
+    // ── A. 托管拨付 ──────────────────────────────────────────────
+    // 释放买家托管，退还 actualRefund 给买家，剩余给卖家
+    db.prepare('UPDATE wallets SET escrowed = escrowed - ? WHERE user_id = ?').run(totalAmount, buyerId)
+    if (actualRefund > 0) {
+      db.prepare('UPDATE wallets SET balance = balance + ? WHERE user_id = ?').run(actualRefund, buyerId)
+    }
+    if (sellerEscrowShare > 0) {
+      db.prepare('UPDATE wallets SET balance = balance + ? WHERE user_id = ?').run(sellerEscrowShare, sellerId)
+    }
+
+    // ── B. 责任罚款 → 协议金库 ────────────────────────────────────
+    let totalToTreasury = 0
+    for (const s of settled) {
+      if (s.actualPenalty > 0) {
+        const w = db.prepare('SELECT balance, staked FROM wallets WHERE user_id = ?')
+          .get(s.userId) as { balance: number; staked: number }
+        if (w.staked >= s.actualPenalty) {
+          db.prepare('UPDATE wallets SET staked = staked - ? WHERE user_id = ?').run(s.actualPenalty, s.userId)
+        } else {
+          const fromStake   = w.staked
+          const fromBalance = s.actualPenalty - fromStake
+          db.prepare('UPDATE wallets SET staked = 0, balance = balance - ? WHERE user_id = ?').run(fromBalance, s.userId)
+        }
+        totalToTreasury += s.actualPenalty
+      }
+    }
+    if (totalToTreasury > 0) {
+      db.prepare('UPDATE wallets SET balance = balance + ? WHERE user_id = ?').run(totalToTreasury, sysUser.id)
+    }
+
+    // ── C. 卖家商品质押处理 ───────────────────────────────────────
+    if (stakeAmount > 0) {
+      if (sellerLiability) {
+        // 卖家有责：按责任金额比例扣罚质押，剩余返还
+        const stakeForfeited = Math.min(stakeAmount, sellerLiability.amount)
+        const stakeReturn    = stakeAmount - stakeForfeited
+        db.prepare('UPDATE wallets SET staked = staked - ? WHERE user_id = ?').run(stakeAmount, sellerId)
+        if (stakeReturn > 0) {
+          db.prepare('UPDATE wallets SET balance = balance + ? WHERE user_id = ?').run(stakeReturn, sellerId)
+        }
+        if (stakeForfeited > 0) {
+          db.prepare('UPDATE wallets SET balance = balance + ? WHERE user_id = ?').run(stakeForfeited, sysUser.id)
+        }
+      } else {
+        // 卖家无责：全额返还质押
+        db.prepare('UPDATE wallets SET staked = staked - ?, balance = balance + ? WHERE user_id = ?')
+          .run(stakeAmount, stakeAmount, sellerId)
+      }
+    }
+
+    transition(db, orderId, 'cancelled', sysUser.id, [], `争议裁定：责任分配，退款买家 ${actualRefund} WAZ`)
+  })()
+
+  return {
+    success: true,
+    detail: {
+      ruling: 'liability_split',
+      buyer_refund: actualRefund,
+      seller_escrow_share: sellerEscrowShare,
+      liability_breakdown: settled.map(s => ({
+        userId: s.userId, role: s.role,
+        owed: s.owed, actualPenalty: s.actualPenalty, insuranceCovered: s.insuranceCovered
+      })),
+    }
   }
 }
 
 // ─── L3-5 资金处置执行 ────────────────────────────────────────
+
+// ─── 仲裁费收取 ───────────────────────────────────────────────
+
+/**
+ * 向败诉方收取仲裁费：订单金额的 1%（最低 1 WAZ）
+ * - 有人工仲裁员时：50% 给仲裁员作为激励，50% 归协议
+ * - 自动裁定时：100% 归协议
+ * - 先扣质押，质押不足再扣余额
+ */
+function chargeArbitrationFee(
+  db: Database.Database,
+  loserId: string,
+  orderAmount: number,
+  arbitratorId: string,
+  sysUserId: string,
+): { fee: number; arbitratorShare: number; protocolShare: number } {
+  const fee = Math.max(1, Math.round(orderAmount * 0.01 * 100) / 100)
+  const isHumanArbitrator = arbitratorId !== sysUserId
+
+  const wallet = db.prepare('SELECT balance, staked FROM wallets WHERE user_id = ?')
+    .get(loserId) as { balance: number; staked: number } | undefined
+  const available = (wallet?.balance ?? 0) + (wallet?.staked ?? 0)
+  const actualFee = Math.min(fee, available)
+  if (actualFee <= 0) return { fee: 0, arbitratorShare: 0, protocolShare: 0 }
+
+  // 扣款：先质押后余额
+  const staked = wallet?.staked ?? 0
+  if (staked >= actualFee) {
+    db.prepare('UPDATE wallets SET staked = staked - ? WHERE user_id = ?').run(actualFee, loserId)
+  } else {
+    const fromBalance = actualFee - staked
+    db.prepare('UPDATE wallets SET staked = 0, balance = balance - ? WHERE user_id = ?').run(fromBalance, loserId)
+  }
+
+  // 分配：人工仲裁各一半，自动裁定全归协议
+  const arbitratorShare = isHumanArbitrator ? Math.round(actualFee * 0.5 * 100) / 100 : 0
+  const protocolShare = actualFee - arbitratorShare
+
+  if (protocolShare > 0) {
+    db.prepare('UPDATE wallets SET balance = balance + ? WHERE user_id = ?').run(protocolShare, sysUserId)
+  }
+  if (arbitratorShare > 0) {
+    db.prepare('UPDATE wallets SET balance = balance + ? WHERE user_id = ?').run(arbitratorShare, arbitratorId)
+  }
+
+  return { fee: actualFee, arbitratorShare, protocolShare }
+}
 
 function executeSettlement(
   db: Database.Database,
@@ -253,7 +530,7 @@ function executeSettlement(
           db.prepare('UPDATE wallets SET balance = balance + ? WHERE user_id = ?').run(penalty, buyerId)
         }
       }
-      transition(db, orderId, 'cancelled', sysUser.id, [], `争议裁定：退款买家，质押惩罚 ${penalty} DCP`)
+      transition(db, orderId, 'cancelled', sysUser.id, [], `争议裁定：退款买家，质押惩罚 ${penalty} WAZ`)
     })()
 
     return {
@@ -317,7 +594,7 @@ function executeSettlement(
         db.prepare('UPDATE wallets SET staked = staked - ?, balance = balance + ? WHERE user_id = ?')
           .run(stakeAmount, stakeReturn, sellerId)
       }
-      transition(db, orderId, 'cancelled', sysUser.id, [], `争议裁定：部分退款 ${refund} DCP`)
+      transition(db, orderId, 'cancelled', sysUser.id, [], `争议裁定：部分退款 ${refund} WAZ`)
     })()
 
     return {
@@ -367,7 +644,7 @@ export function checkDisputeTimeouts(db: Database.Database): {
           action: `被告超时 → ${ruling}`,
           orderId: dispute.order_id,
           winnerId: dispute.initiator_id,
-          loserId: dispute.defendant_id,
+          loserId: dispute.defendant_id ?? undefined,
         })
       }
 
@@ -381,13 +658,159 @@ export function checkDisputeTimeouts(db: Database.Database): {
           action: '仲裁超时 → 默认退款买家',
           orderId: dispute.order_id,
           winnerId: dispute.initiator_id,
-          loserId: dispute.defendant_id,
+          loserId: dispute.defendant_id ?? undefined,
         })
       }
     }
   }
 
   return { processed: details.length, details }
+}
+
+// ─── L3-2 扩展：证据补充请求系统 ────────────────────────────────
+
+export type EvidenceType = 'text' | 'image' | 'video' | 'document' | 'chain_data'
+
+export interface EvidenceRequest {
+  id: string
+  dispute_id: string
+  requested_from_id: string
+  requested_from_name?: string
+  requested_from_role?: string
+  evidence_types: string        // JSON 数组
+  description: string
+  deadline: string
+  status: 'pending' | 'submitted' | 'expired'
+  submitted_evidence_ids: string // JSON 数组
+  created_at: string
+}
+
+export function initEvidenceRequestSchema(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS dispute_evidence_requests (
+      id                    TEXT PRIMARY KEY,
+      dispute_id            TEXT NOT NULL,
+      requested_from_id     TEXT NOT NULL,
+      evidence_types        TEXT DEFAULT '["text"]',
+      description           TEXT NOT NULL,
+      deadline              TEXT NOT NULL,
+      status                TEXT DEFAULT 'pending',
+      submitted_evidence_ids TEXT DEFAULT '[]',
+      created_at            TEXT DEFAULT (datetime('now'))
+    )
+  `)
+}
+
+/**
+ * 仲裁员向任意角色发出"补充证据"请求
+ */
+export function requestEvidence(
+  db: Database.Database,
+  disputeId: string,
+  arbitratorId: string,
+  requestedFromId: string,
+  evidenceTypes: EvidenceType[],
+  description: string,
+  deadlineHours = 48
+): { success: boolean; requestId?: string; error?: string } {
+  const arb = db.prepare('SELECT role FROM users WHERE id = ?').get(arbitratorId) as { role: string } | undefined
+  if (!arb || (arb.role !== 'arbitrator' && arb.role !== 'system')) {
+    return { success: false, error: '仅仲裁员可发出证据请求' }
+  }
+  const dispute = db.prepare('SELECT status FROM disputes WHERE id = ?').get(disputeId) as { status: string } | undefined
+  if (!dispute) return { success: false, error: '争议不存在' }
+  if (dispute.status === 'resolved' || dispute.status === 'dismissed') {
+    return { success: false, error: '该争议已结案' }
+  }
+  const target = db.prepare('SELECT id FROM users WHERE id = ?').get(requestedFromId)
+  if (!target) return { success: false, error: '指定用户不存在' }
+
+  const requestId = generateId('evr')
+  db.prepare(`
+    INSERT INTO dispute_evidence_requests
+      (id, dispute_id, requested_from_id, evidence_types, description, deadline)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(requestId, disputeId, requestedFromId, JSON.stringify(evidenceTypes), description, addHours(new Date(), deadlineHours))
+
+  // 若争议仍在 open 状态，自动推进到 in_review
+  if (dispute.status === 'open') {
+    db.prepare(`UPDATE disputes SET status = 'in_review' WHERE id = ?`).run(disputeId)
+  }
+
+  return { success: true, requestId }
+}
+
+/**
+ * 被要求方提交证据（响应某条请求）
+ */
+export function submitEvidenceForRequest(
+  db: Database.Database,
+  requestId: string,
+  submitterId: string,
+  evidenceType: EvidenceType,
+  description: string,
+  fileHash?: string
+): { success: boolean; evidenceId?: string; anchorHash?: string; error?: string } {
+  const req = db.prepare('SELECT * FROM dispute_evidence_requests WHERE id = ?').get(requestId) as EvidenceRequest | undefined
+  if (!req) return { success: false, error: '证据请求不存在' }
+  if (req.requested_from_id !== submitterId) return { success: false, error: '你不是此请求的被要求方' }
+  if (req.status !== 'pending') return { success: false, error: '此请求已关闭（已提交或已过期）' }
+  if (new Date() > new Date(req.deadline)) return { success: false, error: '提交截止时间已过' }
+
+  const dispute = db.prepare('SELECT order_id FROM disputes WHERE id = ?').get(req.dispute_id) as { order_id: string }
+  // 生成锚定哈希（Phase 0 模拟；Phase 2 替换为 IPFS CID 或链上 TX）
+  const anchorHash = fileHash || generateAnchorHash(description)
+  const eid = generateId('evt')
+
+  db.prepare(`
+    INSERT INTO evidence (id, order_id, uploader_id, type, description, file_hash)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(eid, dispute.order_id, submitterId, evidenceType, description, anchorHash)
+
+  const current: string[] = JSON.parse(req.submitted_evidence_ids || '[]')
+  current.push(eid)
+  db.prepare(`
+    UPDATE dispute_evidence_requests
+    SET status = 'submitted', submitted_evidence_ids = ?
+    WHERE id = ?
+  `).run(JSON.stringify(current), requestId)
+
+  return { success: true, evidenceId: eid, anchorHash }
+}
+
+/**
+ * 查询争议的所有证据请求（含已提交内容）
+ */
+export function getEvidenceRequests(
+  db: Database.Database,
+  disputeId: string
+): (EvidenceRequest & Record<string, unknown>)[] {
+  const rows = db.prepare(`
+    SELECT r.*, u.name as requested_from_name, u.role as requested_from_role
+    FROM dispute_evidence_requests r
+    LEFT JOIN users u ON r.requested_from_id = u.id
+    WHERE r.dispute_id = ?
+    ORDER BY r.created_at ASC
+  `).all(disputeId) as (EvidenceRequest & Record<string, unknown>)[]
+
+  return rows.map(r => {
+    const ids: string[] = JSON.parse(r.submitted_evidence_ids || '[]')
+    const items = ids.length
+      ? db.prepare(`SELECT * FROM evidence WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids)
+      : []
+    return { ...r, submitted_items: items }
+  })
+}
+
+/** 生成锚定哈希（Phase 0 模拟；Phase 2 用 IPFS/链上替换） */
+function generateAnchorHash(content: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < content.length; i++) {
+    h ^= content.charCodeAt(i)
+    h = (h * 0x01000193) >>> 0
+  }
+  const ts = Date.now().toString(16)
+  return `0x${h.toString(16).padStart(8, '0')}${ts}`
 }
 
 // ─── 查询函数 ─────────────────────────────────────────────────
@@ -446,9 +869,9 @@ function addHours(date: Date, hours: number): string {
 
 function getRulingDescription(ruling: string, refundAmount?: number): string {
   switch (ruling) {
-    case 'refund_buyer':    return `全额退款 ${refundAmount ?? ''}DCP 给买家，扣押卖家一半保证金`
+    case 'refund_buyer':    return `全额退款 ${refundAmount ?? ''}WAZ 给买家，扣押卖家一半保证金`
     case 'release_seller':  return '资金释放给卖家，交易完成'
-    case 'partial_refund':  return `部分退款 ${refundAmount} DCP 给买家，余款归卖家`
+    case 'partial_refund':  return `部分退款 ${refundAmount} WAZ 给买家，余款归卖家`
     default: return ruling
   }
 }

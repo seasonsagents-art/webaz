@@ -1,16 +1,16 @@
 /**
  * L1-1 · MCP Server 核心
- * 把 DCP 协议暴露给所有支持 MCP 的 AI Agent（Claude、GPT 等）
+ * 把 WebAZ暴露给所有支持 MCP 的 AI Agent（Claude、GPT 等）
  *
  * 包含工具：
- *   dcp_info          L1-2 协议说明（任何 Agent 可调用，了解这是什么）
- *   dcp_register      注册账户，获取 api_key
- *   dcp_search        L1-2 搜索商品
- *   dcp_list_product  L1-5 卖家上架商品
- *   dcp_place_order   L1-3 买家下单
- *   dcp_update_order  L1-6 更新订单状态（发货/揽收/投递/确认/争议）
- *   dcp_get_status    L1-4 查询订单状态和历史
- *   dcp_wallet        查看钱包余额
+ *   webaz_info          L1-2 协议说明（任何 Agent 可调用，了解这是什么）
+ *   webaz_register      注册账户，获取 api_key
+ *   webaz_search        L1-2 搜索商品
+ *   webaz_list_product  L1-5 卖家上架商品
+ *   webaz_place_order   L1-3 买家下单
+ *   webaz_update_order  L1-6 更新订单状态（发货/揽收/投递/确认/争议）
+ *   webaz_get_status    L1-4 查询订单状态和历史
+ *   webaz_wallet        查看钱包余额
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
@@ -86,8 +86,8 @@ initReputationSchema(db)
 
 const TOOLS = [
   {
-    name: 'dcp_info',
-    description: `获取 DCP（去中心化商业协议）的说明和使用指南。
+    name: 'webaz_info',
+    description: `获取 WebAZ的说明和使用指南。
 这是新 Agent 接入协议时应该调用的第一个工具。
 返回：协议简介、所有可用工具、每个角色的职责和操作流程。
 无需任何参数，无需身份验证。`,
@@ -97,8 +97,8 @@ const TOOLS = [
     },
   },
   {
-    name: 'dcp_register',
-    description: `在 DCP 协议中注册新账户。
+    name: 'webaz_register',
+    description: `在 WebAZ中注册新账户。
 注册后获得唯一的 api_key，后续所有操作都需要这个 key。
 请将 api_key 安全保存，它代表你在协议中的身份。
 
@@ -119,15 +119,15 @@ const TOOLS = [
         },
         initial_balance: {
           type: 'number',
-          description: '初始模拟余额（测试用，默认 1000 DCP）',
+          description: '初始模拟余额（测试用，默认 1000 WAZ）',
         },
       },
       required: ['name', 'role'],
     },
   },
   {
-    name: 'dcp_search',
-    description: `搜索 DCP 协议中的在售商品。
+    name: 'webaz_search',
+    description: `搜索 WebAZ中的在售商品。
 无需登录即可搜索，买家或 Agent 可以自由浏览。
 返回匹配的商品列表，包含价格、卖家信息、库存数量。`,
     inputSchema: {
@@ -141,8 +141,8 @@ const TOOLS = [
     },
   },
   {
-    name: 'dcp_list_product',
-    description: `卖家上架新商品到 DCP 协议。
+    name: 'webaz_list_product',
+    description: `卖家上架新商品到 WebAZ。
 需要卖家角色的 api_key。
 上架时系统会自动计算建议质押金额（商品价格的 15%），用于保障买家权益。
 商品上架后买家可以搜索到并下单。`,
@@ -152,7 +152,7 @@ const TOOLS = [
         api_key: { type: 'string', description: '卖家的 api_key' },
         title: { type: 'string', description: '商品名称' },
         description: { type: 'string', description: '商品详细描述' },
-        price: { type: 'number', description: '商品价格（DCP）' },
+        price: { type: 'number', description: '商品价格（WAZ）' },
         stock: { type: 'number', description: '库存数量，默认 1' },
         category: { type: 'string', description: '商品分类（可选）' },
       },
@@ -160,7 +160,7 @@ const TOOLS = [
     },
   },
   {
-    name: 'dcp_place_order',
+    name: 'webaz_place_order',
     description: `买家下单购买商品。
 需要买家角色的 api_key。
 下单后资金自动进入协议托管，卖家需在 24 小时内接单。
@@ -169,7 +169,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         api_key: { type: 'string', description: '买家的 api_key' },
-        product_id: { type: 'string', description: '要购买的商品 ID（从 dcp_search 获得）' },
+        product_id: { type: 'string', description: '要购买的商品 ID（从 webaz_search 获得）' },
         quantity: { type: 'number', description: '购买数量，默认 1' },
         shipping_address: { type: 'string', description: '收货地址' },
         notes: { type: 'string', description: '给卖家的备注（可选）' },
@@ -182,7 +182,7 @@ const TOOLS = [
     },
   },
   {
-    name: 'dcp_update_order',
+    name: 'webaz_update_order',
     description: `更新订单状态（每个角色只能执行自己的操作）。
 
 卖家可执行的 action：
@@ -219,7 +219,7 @@ const TOOLS = [
     },
   },
   {
-    name: 'dcp_get_status',
+    name: 'webaz_get_status',
     description: `查询订单的当前状态、完整历史记录和当前责任方。
 需要参与该订单的 api_key（买家、卖家或物流方均可查询）。
 返回：当前状态、状态历史（谁在什么时候做了什么）、当前应该由谁操作、截止时间。`,
@@ -233,7 +233,7 @@ const TOOLS = [
     },
   },
   {
-    name: 'dcp_wallet',
+    name: 'webaz_wallet',
     description: `查看自己的钱包余额和收益统计。
 返回：可用余额、质押中金额、托管中金额、累计总收益。`,
     inputSchema: {
@@ -245,7 +245,7 @@ const TOOLS = [
     },
   },
   {
-    name: 'dcp_notifications',
+    name: 'webaz_notifications',
     description: `查询当前用户的通知消息（L2-6 通知系统）。
 Agent 应定期调用此工具检查是否有待处理的订单事件。
 每次有状态变更（新订单/发货/争议等），相关参与方都会收到通知。`,
@@ -260,10 +260,10 @@ Agent 应定期调用此工具检查是否有待处理的订单事件。
     },
   },
   {
-    name: 'dcp_dispute',
+    name: 'webaz_dispute',
     description: `管理争议流程（L3 争议系统）。
 
-当买家认为货不对版、货损、卖家欺诈时，可通过 dcp_update_order action=dispute 发起争议，
+当买家认为货不对版、货损、卖家欺诈时，可通过 webaz_update_order action=dispute 发起争议，
 然后用本工具进行后续操作。
 
 协议保障机制（无需人工干预）：
@@ -306,14 +306,14 @@ ruling 裁定选项（arbitrate 时使用）：
     },
   },
   {
-    name: 'dcp_skill',
+    name: 'webaz_skill',
     description: `L4-4 Skill 市场——让卖家发布可复用的 Agent 能力插件，买家 Agent 一键订阅。
 
-Skill 是解决冷启动的核心机制：现有 Amazon/Shopify 卖家零成本接入 DCP，
+Skill 是解决冷启动的核心机制：现有 Amazon/Shopify 卖家零成本接入 WebAZ，
 买家 Agent 订阅后可自动发现、优先呈现这些卖家的商品，成交后 Skill 发布者获得推荐佣金。
 
 Skill 类型（skill_type）：
-- catalog_sync      目录同步：将外部店铺（Amazon/Shopify/自定义）接入 DCP 搜索，买家订阅后优先看到
+- catalog_sync      目录同步：将外部店铺（Amazon/Shopify/自定义）接入 WebAZ 搜索，买家订阅后优先看到
 - auto_accept       自动接单：买家下单后立即接受，无需等待（config: min_amount, max_amount, max_daily_orders）
 - price_negotiation 价格协商：允许 Agent 在限定范围内议价（config: max_discount_pct, min_quantity）
 - quality_guarantee 质量承诺：额外质押保证金，问题可额外赔偿（config: guarantee_amount, coverage_days）
@@ -373,7 +373,7 @@ function handleInfo() {
 
   return {
     ...summary,
-    description: 'DCP 是一个去中心化商业协议。每笔交易通过状态机流转，每个状态转移都需要对应责任方的操作证明。任何超时未操作，协议自动判定该方违约并执行处置。',
+    description: 'WebAZ 是一个去中心化商业协议。每笔交易通过状态机流转，每个状态转移都需要对应责任方的操作证明。任何超时未操作，协议自动判定该方违约并执行处置。',
     live_stats: stats,
     roles: {
       buyer:      '下单、付款、确认收货或发起争议',
@@ -382,9 +382,9 @@ function handleInfo() {
       arbitrator: '处理争议，做出裁定（120h 内必须裁定，否则系统自动退款买家）',
     },
     quick_start: {
-      seller:    '1. dcp_register(role=seller) → 2. dcp_list_product() → 3. 等通知 dcp_update_order(accept/ship)',
-      buyer:     '1. dcp_register(role=buyer) → 2. dcp_search() → 3. dcp_place_order() → 4. dcp_update_order(confirm)',
-      logistics: '1. dcp_register(role=logistics) → 2. dcp_update_order(pickup) → dcp_update_order(deliver)',
+      seller:    '1. webaz_register(role=seller) → 2. webaz_list_product() → 3. 等通知 webaz_update_order(accept/ship)',
+      buyer:     '1. webaz_register(role=buyer) → 2. webaz_search() → 3. webaz_place_order() → 4. webaz_update_order(confirm)',
+      logistics: '1. webaz_register(role=logistics) → 2. webaz_update_order(pickup) → webaz_update_order(deliver)',
     },
     available_tools: TOOLS.map((t) => ({ name: t.name, description: t.description.split('\n')[0] })),
     full_manifest: `读取 MCP Resource "${MANIFEST_URI}" 获取完整协议规范（状态机/经济模型/争议系统/Skill 市场/声誉系统）`,
@@ -419,9 +419,9 @@ function handleRegister(args: Record<string, unknown>) {
     initial_balance: initialBalance,
     next_step:
       role === 'seller'
-        ? '现在可以用 dcp_list_product 上架你的第一件商品'
+        ? '现在可以用 webaz_list_product 上架你的第一件商品'
         : role === 'buyer'
-        ? '现在可以用 dcp_search 搜索商品'
+        ? '现在可以用 webaz_search 搜索商品'
         : '等待订单分配给你',
   }
 }
@@ -479,7 +479,7 @@ function handleSearch(args: Record<string, unknown>) {
         id: p.id,
         title: p.title,
         description: p.description,
-        price: `${p.price} DCP`,
+        price: `${p.price} WAZ`,
         stock: p.stock,
         category: p.category,
         seller: badge ? `${badge} ${p.seller_name}` : p.seller_name,
@@ -511,7 +511,7 @@ function handleListProduct(args: Record<string, unknown>) {
 
   if (wallet.balance < stakeAmount) {
     return {
-      error: `余额不足：上架此商品需要质押 ${stakeAmount} DCP，你的余额为 ${wallet.balance} DCP`,
+      error: `余额不足：上架此商品需要质押 ${stakeAmount} WAZ，你的余额为 ${wallet.balance} WAZ`,
     }
   }
 
@@ -540,8 +540,8 @@ function handleListProduct(args: Record<string, unknown>) {
     success: true,
     product_id: id,
     title: args.title,
-    price: `${price} DCP`,
-    stake_locked: `${stakeAmount} DCP（质押保证金，交易完成后返还）`,
+    price: `${price} WAZ`,
+    stake_locked: `${stakeAmount} WAZ（质押保证金，交易完成后返还）`,
     stake_rate: stakeDiscount > 0 ? `${(stakeRate * 100).toFixed(0)}%（声誉折扣 -${(stakeDiscount * 100).toFixed(0)}%，原 15%）` : '15%',
     reputation_level: rep.level.label,
     status: 'active（买家现在可以搜索到这件商品）',
@@ -577,7 +577,7 @@ function handlePlaceOrder(args: Record<string, unknown>) {
 
   if (wallet.balance < totalAmount) {
     return {
-      error: `余额不足：订单金额 ${totalAmount} DCP，你的余额 ${wallet.balance} DCP`,
+      error: `余额不足：订单金额 ${totalAmount} WAZ，你的余额 ${wallet.balance} WAZ`,
     }
   }
 
@@ -650,13 +650,13 @@ function handlePlaceOrder(args: Record<string, unknown>) {
     product: product.title,
     seller: product.seller_name,
     quantity,
-    total_amount: `${totalAmount} DCP（已托管，等待交易完成后自动结算）`,
+    total_amount: `${totalAmount} WAZ（已托管，等待交易完成后自动结算）`,
     status: autoAccepted ? 'accepted' : 'paid',
     auto_accepted: autoAccepted || undefined,
     next: autoAccepted
       ? '⚡ 卖家已开启自动接单，订单已立即接受！等待卖家发货。'
       : '等待卖家 24 小时内接单。卖家超时不接单将自动退款。',
-    track: `用 dcp_get_status 查看订单进展`,
+    track: `用 webaz_get_status 查看订单进展`,
   }
 }
 
@@ -746,7 +746,7 @@ function handleUpdateOrder(args: Record<string, unknown>) {
         dispute_id: disputeResult.disputeId,
         message: disputeResult.message,
         respond_deadline: disputeResult.respondDeadline,
-        next: `用 dcp_dispute action=view dispute_id=${disputeResult.disputeId} 查看争议详情`,
+        next: `用 webaz_dispute action=view dispute_id=${disputeResult.disputeId} 查看争议详情`,
       }
     }
     // 争议记录写入失败不影响状态，仍返回成功
@@ -764,7 +764,7 @@ function handleUpdateOrder(args: Record<string, unknown>) {
       success: true,
       new_status: 'completed',
       message: '确认收货成功！资金已自动分配给各参与方。',
-      detail: `用 dcp_wallet 查看你的收益`,
+      detail: `用 webaz_wallet 查看你的收益`,
     }
   }
 
@@ -841,10 +841,10 @@ function handleWallet(args: Record<string, unknown>) {
   return {
     user: user.name,
     role: user.role,
-    balance: `${wallet.balance} DCP（可用）`,
-    staked: `${wallet.staked} DCP（质押中，不可用）`,
-    escrowed: `${wallet.escrowed} DCP（托管中，交易完成后结算）`,
-    total_earned: `${payouts.total ?? 0} DCP（历史累计收益）`,
+    balance: `${wallet.balance} WAZ（可用）`,
+    staked: `${wallet.staked} WAZ（质押中，不可用）`,
+    escrowed: `${wallet.escrowed} WAZ（托管中，交易完成后结算）`,
+    total_earned: `${payouts.total ?? 0} WAZ（历史累计收益）`,
     reputation: {
       level:             `${rep.level.icon} ${rep.level.label}`,
       total_points:      rep.total_points,
@@ -948,7 +948,7 @@ function handleDispute(args: Record<string, unknown>) {
         initiator: `${d.initiator_name}（${d.initiator_role}）`,
         defendant: `${d.defendant_name}（${d.defendant_role}）`,
         reason: d.reason,
-        amount: `${d.total_amount} DCP`,
+        amount: `${d.total_amount} WAZ`,
         respond_deadline: d.respond_deadline,
         arbitrate_deadline: d.arbitrate_deadline,
         created_at: d.created_at,
@@ -1069,7 +1069,7 @@ function handleSkill(args: Record<string, unknown>) {
     return {
       success: true,
       skill_id: skill.id,
-      message: `✅ Skill 「${skill.name}」已发布到 DCP Skill 市场！买家 Agent 现在可以订阅它。`,
+      message: `✅ Skill 「${skill.name}」已发布到 WebAZ Skill 市场！买家 Agent 现在可以订阅它。`,
       type: `${meta.icon} ${meta.label}`,
       tip: 'auto_accept Skill 发布后，买家新订单将自动被接受（无需手动操作）',
     }
@@ -1095,7 +1095,7 @@ function handleSkill(args: Record<string, unknown>) {
     return {
       total: skills.length,
       skills: skills.map(formatSkillForAgent),
-      tip: skills.length === 0 ? '还没有发布任何 Skill。用 dcp_skill action=publish 发布你的第一个 Skill。' : undefined,
+      tip: skills.length === 0 ? '还没有发布任何 Skill。用 webaz_skill action=publish 发布你的第一个 Skill。' : undefined,
     }
   }
 
@@ -1105,7 +1105,7 @@ function handleSkill(args: Record<string, unknown>) {
     return {
       total: skills.length,
       subscriptions: skills.map(formatSkillForAgent),
-      tip: skills.length === 0 ? '还没有订阅任何 Skill。用 dcp_skill action=list 浏览市场。' : undefined,
+      tip: skills.length === 0 ? '还没有订阅任何 Skill。用 webaz_skill action=list 浏览市场。' : undefined,
     }
   }
 
@@ -1169,8 +1169,8 @@ export async function startMCPServer() {
     resources: [
       {
         uri:         MANIFEST_URI,
-        name:        'DCP Protocol Manifest',
-        description: '完整的 DCP 协议机器可读规范。包含：状态机、经济模型、角色职责、争议系统、Skill 市场、声誉积分、Agent 操作指南。AI Agent 读完即可参与协议，无需额外文档。',
+        name:        'WebAZ Protocol Manifest',
+        description: '完整的 WebAZ机器可读规范。包含：状态机、经济模型、角色职责、争议系统、Skill 市场、声誉积分、Agent 操作指南。AI Agent 读完即可参与协议，无需额外文档。',
         mimeType:    'application/json',
       },
     ],
@@ -1198,17 +1198,17 @@ export async function startMCPServer() {
 
     try {
       switch (name) {
-        case 'dcp_info':          result = handleInfo(); break
-        case 'dcp_register':      result = handleRegister(args); break
-        case 'dcp_search':        result = handleSearch(args); break
-        case 'dcp_list_product':  result = handleListProduct(args); break
-        case 'dcp_place_order':   result = handlePlaceOrder(args); break
-        case 'dcp_update_order':  result = handleUpdateOrder(args); break
-        case 'dcp_get_status':    result = handleGetStatus(args); break
-        case 'dcp_wallet':        result = handleWallet(args); break
-        case 'dcp_dispute':        result = handleDispute(args); break
-        case 'dcp_notifications':  result = handleNotifications(args); break
-        case 'dcp_skill':          result = handleSkill(args); break
+        case 'webaz_info':          result = handleInfo(); break
+        case 'webaz_register':      result = handleRegister(args); break
+        case 'webaz_search':        result = handleSearch(args); break
+        case 'webaz_list_product':  result = handleListProduct(args); break
+        case 'webaz_place_order':   result = handlePlaceOrder(args); break
+        case 'webaz_update_order':  result = handleUpdateOrder(args); break
+        case 'webaz_get_status':    result = handleGetStatus(args); break
+        case 'webaz_wallet':        result = handleWallet(args); break
+        case 'webaz_dispute':        result = handleDispute(args); break
+        case 'webaz_notifications':  result = handleNotifications(args); break
+        case 'webaz_skill':          result = handleSkill(args); break
         default: result = { error: `未知工具：${name}` }
       }
     } catch (err) {
@@ -1222,7 +1222,7 @@ export async function startMCPServer() {
 
   const transport = new StdioServerTransport()
   await server.connect(transport)
-  console.error('✅ DCP MCP Server 已启动，等待 Agent 连接...')
+  console.error('✅ WebAZ MCP Server 已启动，等待 Agent 连接...')
 }
 
 // ─── 工具函数 ─────────────────────────────────────────────────

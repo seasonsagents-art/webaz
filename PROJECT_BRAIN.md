@@ -187,24 +187,21 @@
 | 2026-05-11 | L0-2+L0-3 状态机+责任归因完成 | 17条转移规则，超时判责，git commit b767ba3 |
 | 2026-05-07 | MCP Server 全部8个工具完成（L1-1~L1-7） | dcp_info/register/search/list/order/update/status/wallet |
 | 2026-05-07 | Phase 0 第一笔真实交易跑通 ✅ | npm run demo 成功完成完整交易流程，资金自动结算 |
+| 2026-05-11 | L2-6 通知系统 + L3 争议系统 + L4-3 声誉 + L4-4 Skill 市场 + L0-5 Manifest | Phase 1 核心模块全部完成 |
+| 2026-05-11 | PWA 完整前端 | 商店/订单/卖家/物流/仲裁/争议/Skill/钱包/通知 全部角色覆盖 |
+| 2026-05-11 | 钱包充值入口 + 物流仪表盘 | 新用户体验完善，演示流程补全 |
 
 ---
 
 ## 当前待办（下次会话从这里开始）
 
-### Phase 0 全部完成 ✅
-1. ✅ 初始化项目目录结构
-2. ✅ 安装依赖（TypeScript + MCP SDK + SQLite）
-3. ✅ 建立数据库 Schema（L0-1）— 8张表全部就绪
-4. ✅ 状态机引擎（L0-2）+ 责任归因（L0-3）
-5. ✅ MCP Server（L1-1 至 L1-7）+ 收益分配（L4-1）
-6. ✅ demo-agent.ts 跑通第一笔完整交易（卖家+买家+物流 3个Agent参与）
+### Phase 0 + Phase 1 核心 全部完成 ✅
 
-### Phase 1 下一步
-7. ✅ L3 争议系统（L3-1/2/3/5）：三场景全部通过
-8. 👉 定时任务：定期调用 checkTimeouts() + checkDisputeTimeouts()（自动执法）
-9. 👉 录屏演示：`npm run demo` 流程录屏，准备对外展示
-10. 👉 PWA 最小前端：卖家后台（上架/接单/发货）+ 买家订单页
+### 发布前剩余工作
+1. ✅ `npm run enforcement` 已合并进 server.ts，随 PWA 自动启动
+2. ✅ README.md：完成（MCP 接入说明 + 工具清单 + 流程 + 路线图，184行）
+3. 👉 录屏演示：完整流程录屏（买家下单→卖家接单→物流配送→确认/争议→仲裁裁定）
+4. 👉 确认 MCP 市场发布渠道（modelcontextprotocol/servers GitHub PR）
 
 ### 体验 MCP 工具（在对话中真实调用 dcp_* 工具）
 ```bash

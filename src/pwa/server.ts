@@ -1,6 +1,6 @@
 /**
  * PWA HTTP Server
- * 把 DCP 协议暴露给手机浏览器
+ * 把 WebAZ暴露给手机浏览器
  * 端口：3000
  */
 
@@ -9,8 +9,14 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 
 import { initDatabase, generateId } from '../layer0-foundation/L0-1-database/schema.js'
-import { initSystemUser, transition, getOrderStatus } from '../layer0-foundation/L0-2-state-machine/engine.js'
-import { initDisputeSchema, createDispute, respondToDispute, arbitrateDispute, getOrderDispute } from '../layer3-trust/L3-1-dispute-engine/dispute-engine.js'
+import { initSystemUser, transition, getOrderStatus, checkTimeouts } from '../layer0-foundation/L0-2-state-machine/engine.js'
+import {
+  initDisputeSchema, createDispute, respondToDispute, arbitrateDispute,
+  getOrderDispute, getDisputeDetails, getOpenDisputes, checkDisputeTimeouts,
+  initEvidenceRequestSchema, requestEvidence, submitEvidenceForRequest, getEvidenceRequests,
+  addPartyEvidence,
+  type EvidenceType, type LiabilityEntry,
+} from '../layer3-trust/L3-1-dispute-engine/dispute-engine.js'
 import {
   initNotificationSchema,
   notifyTransition,
@@ -35,6 +41,7 @@ import {
   initReputationSchema,
   recordOrderReputation,
   recordViolationReputation,
+  recordDisputeReputation,
   getReputation,
   getSearchBoost,
   getStakeDiscount,
@@ -49,6 +56,7 @@ initDisputeSchema(db)
 initNotificationSchema(db)
 initSkillSchema(db)
 initReputationSchema(db)
+initEvidenceRequestSchema(db)
 
 const app = express()
 app.use(express.json())
@@ -145,7 +153,7 @@ app.post('/api/products', (req, res) => {
   const wallet = db.prepare('SELECT balance FROM wallets WHERE user_id = ?').get(user.id) as { balance: number }
 
   if (wallet.balance < stakeAmount) {
-    return void res.json({ error: `余额不足：上架需质押 ${stakeAmount} DCP，当前余额 ${wallet.balance} DCP` })
+    return void res.json({ error: `余额不足：上架需质押 ${stakeAmount} WAZ，当前余额 ${wallet.balance} WAZ` })
   }
 
   const id = generateId('prd')
@@ -187,7 +195,28 @@ app.get('/api/orders/:id', (req, res) => {
   const product = db.prepare('SELECT title, price, images FROM products WHERE id = ?').get(order.product_id as string)
   const dispute = getOrderDispute(db, req.params.id)
 
-  res.json({ ...statusInfo, product, dispute })
+  // 为每条历史记录附上证据描述内容
+  const history = (statusInfo.history as Record<string, unknown>[]).map(h => {
+    const ids: string[] = JSON.parse((h.evidence_ids as string) || '[]')
+    const evidenceItems = ids.length
+      ? db.prepare(`SELECT description, type FROM evidence WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids)
+      : []
+    return { ...h, evidence_items: evidenceItems }
+  })
+
+  // 物流跟踪摘要：从历史中提取所有物流操作的证据
+  const LOGISTICS_STEPS = ['shipped', 'picked_up', 'in_transit', 'delivered']
+  const trackingInfo = history
+    .filter(h => LOGISTICS_STEPS.includes(h.to_status as string))
+    .map(h => ({
+      status:    h.to_status,
+      actor:     h.actor_name,
+      time:      h.created_at,
+      evidence:  (h.evidence_items as { description: string }[]).map(e => e.description).filter(Boolean),
+      notes:     h.notes,
+    }))
+
+  res.json({ ...statusInfo, history, product, dispute, trackingInfo })
 })
 
 // 下单
@@ -206,7 +235,7 @@ app.post('/api/orders', (req, res) => {
 
   const totalAmount = product.price as number
   const wallet = db.prepare('SELECT balance FROM wallets WHERE user_id = ?').get(user.id) as { balance: number }
-  if (wallet.balance < totalAmount) return void res.json({ error: `余额不足：需 ${totalAmount} DCP，当前 ${wallet.balance} DCP` })
+  if (wallet.balance < totalAmount) return void res.json({ error: `余额不足：需 ${totalAmount} WAZ，当前 ${wallet.balance} WAZ` })
 
   const now = new Date()
   const orderId = generateId('ord')
@@ -239,16 +268,31 @@ app.post('/api/orders', (req, res) => {
   res.json({ success: true, order_id: orderId, total_amount: totalAmount, auto_accepted: autoAccepted || undefined })
 })
 
+// 物流公司列表（卖家发货时选择）
+app.get('/api/logistics/companies', (req, res) => {
+  const companies = db.prepare(
+    `SELECT id, name FROM users WHERE role = 'logistics' ORDER BY name ASC`
+  ).all()
+  res.json(companies)
+})
+
 // 更新订单状态（接单/发货/揽收/投递/确认/争议）
 app.post('/api/orders/:id/action', (req, res) => {
   const user = auth(req, res); if (!user) return
-  const { action, notes = '', evidence_description = '' } = req.body
+  const { action, notes = '', evidence_description = '', logistics_company_id = '' } = req.body
 
   const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id) as Record<string, unknown> | undefined
   if (!order) return void res.status(404).json({ error: '订单不存在' })
 
-  // 物流首次操作绑定 logistics_id
-  if (['pickup', 'transit'].includes(action) && !order.logistics_id && user.role === 'logistics') {
+  // 卖家发货时：绑定选择的物流公司
+  if (action === 'ship' && logistics_company_id) {
+    const logi = db.prepare(`SELECT id FROM users WHERE id = ? AND role = 'logistics'`).get(logistics_company_id)
+    if (!logi) return void res.json({ error: '所选物流公司不存在' })
+    db.prepare('UPDATE orders SET logistics_id = ? WHERE id = ?').run(logistics_company_id, req.params.id)
+  }
+
+  // 物流自行揽收（卖家未指定物流时的兜底）
+  if (action === 'pickup' && !order.logistics_id && (user as Record<string, unknown>).role === 'logistics') {
     db.prepare('UPDATE orders SET logistics_id = ? WHERE id = ?').run(user.id, req.params.id)
   }
 
@@ -296,6 +340,47 @@ app.get('/api/wallet', (req, res) => {
   const user = auth(req, res); if (!user) return
   const wallet = db.prepare('SELECT * FROM wallets WHERE user_id = ?').get(user.id)
   res.json(wallet)
+})
+
+// 充值测试 WAZ（Phase 0 专用，最多单次 1000，余额上限 5000）
+app.post('/api/wallet/topup', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  const amount = Math.min(1000, Math.max(1, Number(req.body?.amount) || 500))
+  const wallet = db.prepare('SELECT balance FROM wallets WHERE user_id = ?').get(user.id) as { balance: number }
+  if (wallet.balance >= 5000) return void res.json({ error: '余额已达上限 5000 WAZ，无需充值' })
+  const actual = Math.min(amount, 5000 - wallet.balance)
+  db.prepare('UPDATE wallets SET balance = balance + ? WHERE user_id = ?').run(actual, user.id)
+  res.json({ success: true, added: actual, new_balance: wallet.balance + actual })
+})
+
+// 物流：可接订单 + 我的进行中订单
+app.get('/api/logistics/orders', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  if ((user as Record<string, unknown>).role !== 'logistics') return void res.status(403).json({ error: '仅限物流角色' })
+
+  const available = db.prepare(`
+    SELECT o.*, p.title as product_title, p.category,
+      ub.name as buyer_name, us.name as seller_name
+    FROM orders o
+    JOIN products p ON o.product_id = p.id
+    JOIN users ub ON o.buyer_id = ub.id
+    JOIN users us ON o.seller_id = us.id
+    WHERE o.status = 'shipped' AND (o.logistics_id IS NULL OR o.logistics_id = '')
+    ORDER BY o.created_at ASC LIMIT 20
+  `).all()
+
+  const mine = db.prepare(`
+    SELECT o.*, p.title as product_title, p.category,
+      ub.name as buyer_name, us.name as seller_name
+    FROM orders o
+    JOIN products p ON o.product_id = p.id
+    JOIN users ub ON o.buyer_id = ub.id
+    JOIN users us ON o.seller_id = us.id
+    WHERE o.logistics_id = ? AND o.status IN ('shipped','picked_up','in_transit')
+    ORDER BY o.created_at ASC LIMIT 20
+  `).all(user.id)
+
+  res.json({ available, mine })
 })
 
 // ─── 结算 ──────────────────────────────────────────────────────
@@ -466,6 +551,224 @@ app.get('/api/reputation/:userId', (req, res) => {
   })
 })
 
+// ─── 争议 API（L3 PWA 接口）────────────────────────────────────
+
+// 仲裁员：查看所有开放争议
+app.get('/api/disputes', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  if ((user as Record<string, unknown>).role !== 'arbitrator') return void res.status(403).json({ error: '仅限仲裁员访问' })
+  res.json(getOpenDisputes(db))
+})
+
+// 争议详情（含双方证据）
+app.get('/api/disputes/:id', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  const dispute = getDisputeDetails(db, req.params.id)
+  if (!dispute) return void res.status(404).json({ error: '争议不存在' })
+
+  const role = (user as Record<string, unknown>).role as string
+  // 允许：发起方、被告方、物流方（关联订单的 logistics_id）、仲裁员
+  const orderForAuth = db.prepare('SELECT logistics_id FROM orders WHERE id = ?')
+    .get(dispute.order_id) as { logistics_id: string | null } | undefined
+  const isLogisticsParty = orderForAuth?.logistics_id === user.id
+  if (dispute.initiator_id !== user.id && dispute.defendant_id !== user.id
+      && !isLogisticsParty && role !== 'arbitrator') {
+    return void res.status(403).json({ error: '无权查看此争议' })
+  }
+
+  // 原告证据 — 从状态机历史中取 disputed 转移时附带的证据
+  const hist = db.prepare(
+    `SELECT evidence_ids FROM order_state_history WHERE order_id = ? AND to_status = 'disputed'`
+  ).get(dispute.order_id) as { evidence_ids: string } | undefined
+  const plaintiffEvidenceIds: string[] = hist ? JSON.parse(hist.evidence_ids || '[]') : []
+  const defEvidenceIds: string[] = JSON.parse(dispute.defendant_evidence_ids || '[]')
+
+  const fetchEvidence = (ids: string[]) =>
+    ids.length
+      ? db.prepare(`SELECT * FROM evidence WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids)
+      : []
+
+  // 证据补充请求列表
+  const evidenceRequests = getEvidenceRequests(db, req.params.id)
+  const myPendingRequests = evidenceRequests.filter(
+    r => r.requested_from_id === user.id && r.status === 'pending'
+  )
+
+  // 涉案参与方（仲裁员选择发证据请求的对象）
+  const order = db.prepare('SELECT buyer_id, seller_id, logistics_id FROM orders WHERE id = ?')
+    .get(dispute.order_id) as Record<string, string | null> | undefined
+  const partyIds = [dispute.initiator_id, dispute.defendant_id, order?.logistics_id].filter(Boolean) as string[]
+  const parties = [...new Set(partyIds)].map(id =>
+    db.prepare('SELECT id, name, role FROM users WHERE id = ?').get(id)
+  ).filter(Boolean)
+
+  // 参与方主动提交的证据
+  const partyEvidenceIds: string[] = JSON.parse((dispute as Record<string, unknown>).party_evidence_ids as string || '[]')
+
+  // 当前用户是否参与方（用于前端判断是否显示主动举证按钮）
+  const orderParties = db.prepare('SELECT buyer_id, seller_id, logistics_id FROM orders WHERE id = ?')
+    .get(dispute.order_id) as Record<string, string | null> | undefined
+  const allPartyIds = [
+    orderParties?.buyer_id, orderParties?.seller_id, orderParties?.logistics_id,
+    dispute.initiator_id, dispute.defendant_id
+  ].filter(Boolean) as string[]
+  const isParty = allPartyIds.includes(user.id as string)
+
+  res.json({
+    ...dispute,
+    plaintiff_evidence:   fetchEvidence(plaintiffEvidenceIds),
+    defendant_evidence:   fetchEvidence(defEvidenceIds),
+    party_evidence:       fetchEvidence(partyEvidenceIds),
+    evidence_requests:    evidenceRequests,
+    my_pending_requests:  myPendingRequests,
+    parties,
+    is_party: isParty,
+  })
+})
+
+// 被诉方提交反驳证据
+app.post('/api/disputes/:id/respond', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  const { notes = '', evidence_description = '' } = req.body
+
+  const dispute = getDisputeDetails(db, req.params.id)
+  if (!dispute) return void res.status(404).json({ error: '争议不存在' })
+  if (dispute.defendant_id !== user.id) return void res.status(403).json({ error: '你不是本争议的被诉方' })
+
+  const evidenceIds: string[] = []
+  if (evidence_description) {
+    const eid = generateId('evt')
+    db.prepare(`INSERT INTO evidence (id, order_id, uploader_id, type, description, file_hash)
+      VALUES (?,?,?,'description',?,?)`).run(eid, dispute.order_id, user.id, evidence_description, `hash_${Date.now()}`)
+    evidenceIds.push(eid)
+  }
+
+  const result = respondToDispute(db, req.params.id, user.id as string, notes || evidence_description, evidenceIds)
+  if (!result.success) return void res.json({ error: result.error })
+  res.json({ success: true, message: result.message })
+})
+
+// 仲裁员裁定
+app.post('/api/disputes/:id/arbitrate', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  if ((user as Record<string, unknown>).role !== 'arbitrator') return void res.status(403).json({ error: '仅限仲裁员' })
+
+  const { ruling, reason, refund_amount, liability_parties } = req.body
+  if (!ruling || !reason) return void res.json({ error: '请提供裁定结果（ruling）和理由（reason）' })
+  const validRulings = ['refund_buyer', 'release_seller', 'partial_refund', 'liability_split']
+  if (!validRulings.includes(ruling)) {
+    return void res.json({ error: `ruling 必须是 ${validRulings.join(' / ')} 之一` })
+  }
+  if (ruling === 'liability_split') {
+    if (!Array.isArray(liability_parties) || liability_parties.length === 0) {
+      return void res.json({ error: '责任分配裁定需要提供 liability_parties 数组' })
+    }
+    for (const p of liability_parties as LiabilityEntry[]) {
+      if (!p.user_id || typeof p.amount !== 'number' || p.amount < 0) {
+        return void res.json({ error: '每个责任方需提供 user_id 和非负 amount' })
+      }
+    }
+  }
+
+  const dispute = getDisputeDetails(db, req.params.id)
+  if (!dispute) return void res.status(404).json({ error: '争议不存在' })
+
+  const result = arbitrateDispute(
+    db, req.params.id, user.id as string, ruling, reason,
+    refund_amount ? Number(refund_amount) : undefined,
+    liability_parties as LiabilityEntry[] | undefined
+  )
+  if (!result.success) return void res.json({ error: result.error })
+
+  // 争议声誉更新（责任分配时以主要责任方为败诉方）
+  let winnerId: string | null = null
+  let loserId: string | null = null
+  if (ruling === 'refund_buyer') {
+    winnerId = dispute.initiator_id; loserId = dispute.defendant_id
+  } else if (ruling === 'release_seller') {
+    winnerId = dispute.defendant_id; loserId = dispute.initiator_id
+  } else if (ruling === 'liability_split' && Array.isArray(liability_parties) && liability_parties.length > 0) {
+    // 最大责任方为败诉方
+    const maxLiable = (liability_parties as LiabilityEntry[]).reduce((a, b) => a.amount >= b.amount ? a : b)
+    loserId = maxLiable.user_id
+    winnerId = dispute.initiator_id !== loserId ? dispute.initiator_id : dispute.defendant_id
+  }
+  if (winnerId && loserId) recordDisputeReputation(db, dispute.order_id, winnerId, loserId)
+
+  res.json({ success: true, message: result.message, settlement: result.settlement })
+})
+
+// 参与方主动提交证据
+app.post('/api/disputes/:id/add-evidence', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  const { description, evidence_type = 'text', file_hash } = req.body
+  if (!description?.trim()) return void res.json({ error: '请填写证据内容' })
+
+  const result = addPartyEvidence(
+    db, req.params.id, user.id as string,
+    description.trim(), evidence_type as EvidenceType, file_hash
+  )
+  if (!result.success) return void res.json({ error: result.error })
+  res.json({ success: true, evidence_id: result.evidenceId, anchor_hash: result.anchorHash })
+})
+
+// 仲裁员：请求某方补充证据
+app.post('/api/disputes/:id/request-evidence', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  if ((user as Record<string, unknown>).role !== 'arbitrator') return void res.status(403).json({ error: '仅限仲裁员' })
+
+  const { requested_from_id, evidence_types, description, deadline_hours = 48 } = req.body
+  if (!requested_from_id || !description) return void res.json({ error: '请指定被要求方和证据要求说明' })
+  if (!Array.isArray(evidence_types) || evidence_types.length === 0) {
+    return void res.json({ error: '请至少选择一种证据类型' })
+  }
+  const validTypes = ['text', 'image', 'video', 'document', 'chain_data']
+  if (!evidence_types.every((t: string) => validTypes.includes(t))) {
+    return void res.json({ error: `证据类型无效，支持：${validTypes.join('/')}` })
+  }
+
+  const result = requestEvidence(
+    db, req.params.id, user.id as string,
+    requested_from_id, evidence_types as EvidenceType[],
+    description, Number(deadline_hours)
+  )
+  if (!result.success) return void res.json({ error: result.error })
+  res.json({ success: true, request_id: result.requestId })
+})
+
+// 当事人：提交指定证据请求的回应
+app.post('/api/evidence-requests/:requestId/submit', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  const { evidence_type = 'text', description, file_hash } = req.body
+  if (!description?.trim()) return void res.json({ error: '请填写证据内容' })
+
+  const result = submitEvidenceForRequest(
+    db, req.params.requestId, user.id as string,
+    evidence_type as EvidenceType, description.trim(), file_hash
+  )
+  if (!result.success) return void res.json({ error: result.error })
+  res.json({ success: true, evidence_id: result.evidenceId, anchor_hash: result.anchorHash })
+})
+
+// 查询某争议的关联用户（仲裁员选择发证据请求给谁）
+app.get('/api/disputes/:id/parties', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  const dispute = getDisputeDetails(db, req.params.id)
+  if (!dispute) return void res.status(404).json({ error: '争议不存在' })
+
+  const order = db.prepare('SELECT buyer_id, seller_id, logistics_id FROM orders WHERE id = ?')
+    .get(dispute.order_id) as Record<string, string | null> | undefined
+
+  const partyIds = [dispute.initiator_id, dispute.defendant_id, order?.logistics_id].filter(Boolean) as string[]
+  const uniqueIds = [...new Set(partyIds)]
+  const parties = uniqueIds.map(id => {
+    const u = db.prepare('SELECT id, name, role FROM users WHERE id = ?').get(id) as Record<string, string>
+    return u
+  }).filter(Boolean)
+
+  res.json(parties)
+})
+
 // ─── 静态文件 + SPA 回退（必须在所有 API 路由之后）────────────
 app.use(express.static(path.join(__dirname, 'public')))
 
@@ -473,10 +776,47 @@ app.get('/{*path}', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'))
 })
 
+// ─── 自动执法（随 PWA 进程内置运行）────────────────────────────
+
+const ENFORCE_INTERVAL_MS = 5 * 60 * 1000   // 每 5 分钟扫描一次
+
+function runEnforcement() {
+  try {
+    const orderResult   = checkTimeouts(db)
+    const disputeResult = checkDisputeTimeouts(db)
+
+    if (orderResult.processed > 0) {
+      console.log(`⚡ 订单超时判责 × ${orderResult.processed}`)
+      orderResult.details.forEach(d => {
+        console.log(`   ${d.orderId}  ${d.action}`)
+        const faultMatch = d.action.match(/→ (fault_\w+)/)
+        if (faultMatch) recordViolationReputation(db, d.orderId, faultMatch[1])
+      })
+    }
+
+    if (disputeResult.processed > 0) {
+      console.log(`⚡ 争议自动裁定 × ${disputeResult.processed}`)
+      disputeResult.details.forEach(d => {
+        console.log(`   ${d.disputeId}  ${d.action}`)
+        if (d.winnerId && d.loserId && d.orderId) {
+          recordDisputeReputation(db, d.orderId, d.winnerId as string, d.loserId as string)
+        }
+      })
+    }
+  } catch (err) {
+    console.error('执法扫描出错：', (err as Error).message)
+  }
+}
+
 // ─── 启动 ─────────────────────────────────────────────────────
 
 const PORT = 3000
 app.listen(PORT, () => {
-  console.log(`✅ DCP PWA 已启动：http://localhost:${PORT}`)
+  console.log(`✅ WebAZ 已启动：http://localhost:${PORT}`)
   console.log(`   手机访问：http://<本机IP>:${PORT}`)
+
+  // 启动时立即扫描一次，之后每 5 分钟执行
+  runEnforcement()
+  setInterval(runEnforcement, ENFORCE_INTERVAL_MS)
+  console.log(`⚡ 自动执法已启动（每 ${ENFORCE_INTERVAL_MS / 60000} 分钟扫描）`)
 })

@@ -1,20 +1,20 @@
 /**
  * L0-5 · Protocol Manifest
  *
- * DCP 协议的机器可读规范。
+ * WebAZ的机器可读规范。
  * 任何 AI Agent 读完这份 Manifest 就能立即参与协议，
  * 无需人工引导、无需试错、无需查文档。
  *
  * 输出格式：结构化 JSON，可通过以下方式获取：
- *   1. MCP Resource：dcp://protocol/manifest
+ *   1. MCP Resource：webaz://protocol/manifest
  *   2. HTTP GET：<server>/api/manifest
- *   3. dcp_info 工具返回值中的 manifest 字段
+ *   3. webaz_info 工具返回值中的 manifest 字段
  */
 
 import Database from 'better-sqlite3'
 
 export const MANIFEST_VERSION = '0.1.0'
-export const MANIFEST_URI     = 'dcp://protocol/manifest'
+export const MANIFEST_URI     = 'webaz://protocol/manifest'
 
 // ─── 协议常量（与状态机保持同步）────────────────────────────
 
@@ -96,7 +96,7 @@ const ECONOMICS = {
   escrow: {
     description:  '买家付款后资金立即进入协议托管，不经任何人手',
     release_condition: '仅在买家确认收货或仲裁完成后自动释放',
-    currency:     'DCP（Phase 0 为模拟代币，Phase 2 接入链上稳定币）',
+    currency:     'WAZ（Phase 0 为模拟代币，Phase 2 接入链上稳定币）',
   },
 }
 
@@ -107,13 +107,13 @@ const ROLES = {
     label:        '买家',
     description:  '浏览搜索商品，下单付款，确认收货。如有问题可发起争议。',
     stake_required: false,
-    entry_action: 'dcp_register(role=buyer)',
+    entry_action: 'webaz_register(role=buyer)',
     workflow: [
-      'dcp_search(query="...")  → 搜索商品',
-      'dcp_place_order(product_id, shipping_address)  → 下单，资金自动托管',
-      'dcp_get_status(order_id)  → 追踪订单进展',
-      'dcp_update_order(action=confirm)  → 确认收货，触发结算',
-      'dcp_update_order(action=dispute, evidence)  → 如有问题发起争议',
+      'webaz_search(query="...")  → 搜索商品',
+      'webaz_place_order(product_id, shipping_address)  → 下单，资金自动托管',
+      'webaz_get_status(order_id)  → 追踪订单进展',
+      'webaz_update_order(action=confirm)  → 确认收货，触发结算',
+      'webaz_update_order(action=dispute, evidence)  → 如有问题发起争议',
     ],
     key_rights:   ['72h 内不确认可超时自动确认', '任何阶段可发起争议（需提供证据）', '卖家/物流违约自动退款'],
     key_duties:   ['24h 内完成付款', '72h 内确认收货或发起争议', '争议需提供真实证据'],
@@ -123,13 +123,13 @@ const ROLES = {
     label:        '卖家',
     description:  '上架商品，接单，按时发货。质押保证金确保履约。',
     stake_required: true,
-    entry_action: 'dcp_register(role=seller)',
+    entry_action: 'webaz_register(role=seller)',
     workflow: [
-      'dcp_list_product(title, description, price, stock)  → 上架商品（需质押 15% 保证金）',
-      'dcp_notifications(unread=true)  → 定期检查新订单通知',
-      'dcp_update_order(action=accept, order_id)  → 接单（24h 内必须）',
-      'dcp_update_order(action=ship, evidence="物流单号+照片")  → 发货（72h 内必须）',
-      'dcp_skill(action=publish, skill_type=auto_accept)  → 可选：发布自动接单 Skill',
+      'webaz_list_product(title, description, price, stock)  → 上架商品（需质押 15% 保证金）',
+      'webaz_notifications(unread=true)  → 定期检查新订单通知',
+      'webaz_update_order(action=accept, order_id)  → 接单（24h 内必须）',
+      'webaz_update_order(action=ship, evidence="物流单号+照片")  → 发货（72h 内必须）',
+      'webaz_skill(action=publish, skill_type=auto_accept)  → 可选：发布自动接单 Skill',
     ],
     key_rights:   ['自动结算无需人工干预', '声誉升级降低质押比例', '发布 Skill 获得额外推荐佣金'],
     key_duties:   ['24h 内接单（否则自动退款 + 违约记录）', '72h 内发货（需上传证据）', '争议需在 48h 内提交反驳证据'],
@@ -139,11 +139,11 @@ const ROLES = {
     label:        '物流方',
     description:  '揽收包裹，更新运输状态，完成投递。每笔成交获得 5% 物流费。',
     stake_required: false,
-    entry_action: 'dcp_register(role=logistics)',
+    entry_action: 'webaz_register(role=logistics)',
     workflow: [
-      'dcp_update_order(action=pickup, order_id, evidence="揽收凭证")  → 揽收（48h 内）',
-      'dcp_update_order(action=transit, order_id)  → 更新运输状态',
-      'dcp_update_order(action=deliver, order_id, evidence="投递照片")  → 确认投递（7天内）',
+      'webaz_update_order(action=pickup, order_id, evidence="揽收凭证")  → 揽收（48h 内）',
+      'webaz_update_order(action=transit, order_id)  → 更新运输状态',
+      'webaz_update_order(action=deliver, order_id, evidence="投递照片")  → 确认投递（7天内）',
     ],
     key_rights:   ['每笔成交自动获得 5% 物流费', '违约赔付有责任上限'],
     key_duties:   ['48h 内揽收', '7天内完成投递', '必须上传揽收和投递证明'],
@@ -153,11 +153,11 @@ const ROLES = {
     label:        '仲裁员',
     description:  '处理争议案件，做出裁定。需要公正客观，裁定结果永久上链。',
     stake_required: false,
-    entry_action: 'dcp_register(role=arbitrator)',
+    entry_action: 'webaz_register(role=arbitrator)',
     workflow: [
-      'dcp_dispute(action=list_open)  → 查看所有待处理争议',
-      'dcp_dispute(action=view, dispute_id)  → 查看争议详情和双方证据',
-      'dcp_dispute(action=arbitrate, ruling=refund_buyer|release_seller|partial_refund, ruling_reason)  → 做出裁定',
+      'webaz_dispute(action=list_open)  → 查看所有待处理争议',
+      'webaz_dispute(action=view, dispute_id)  → 查看争议详情和双方证据',
+      'webaz_dispute(action=arbitrate, ruling=refund_buyer|release_seller|partial_refund, ruling_reason)  → 做出裁定',
     ],
     key_rights:   ['查看所有争议详情', '做出三种裁定选择', '仲裁超时后系统自动裁定（保护所有人）'],
     key_duties:   ['120h 内完成裁定（否则系统自动退款买家）', '裁定必须提供理由（永久记录）', '保持公正客观'],
@@ -220,7 +220,7 @@ const SKILL_MARKET = {
     { type: 'catalog_sync',      label: '目录同步',  benefit: '买家订阅后搜索时优先看到你的商品，成交额 0.5% 作为推荐佣金' },
     { type: 'auto_accept',       label: '自动接单',  benefit: '买家下单后立即接受，无需等待 24h，大幅提升买家体验' },
     { type: 'price_negotiation', label: '价格协商',  benefit: '允许买家 Agent 在限定范围内自动议价，减少沟通成本' },
-    { type: 'quality_guarantee', label: '质量承诺',  benefit: '额外质押 DCP 作为品质担保，增强买家信任' },
+    { type: 'quality_guarantee', label: '质量承诺',  benefit: '额外质押 WAZ 作为品质担保，增强买家信任' },
     { type: 'instant_ship',      label: '极速发货',  benefit: '承诺 24h 内发货，违约自动赔付' },
   ],
 }
@@ -251,24 +251,24 @@ const REPUTATION = {
 // ─── Agent 操作指南（直接嵌入 Manifest，供 LLM 读取）──────────
 
 const AGENT_GUIDE = {
-  for_llm: `你是一个 AI Agent，正在读取 DCP（去中心化商业协议）的机器可读规范。
+  for_llm: `你是一个 AI Agent，正在读取 WebAZ的机器可读规范。
 以下是你需要知道的核心要点：
 
-1. DCP 是一个 Agent 原生的商业协议。你可以作为买家、卖家或物流方参与交易。
-2. 调用 dcp_register 获取 api_key，后续所有操作都用这个 key 认证。
+1. WebAZ 是一个 Agent 原生的商业协议。你可以作为买家、卖家或物流方参与交易。
+2. 调用 webaz_register 获取 api_key，后续所有操作都用这个 key 认证。
 3. 每笔交易的资金自动托管，超时自动判责，你不需要担心对方违约。
 4. 发货/揽收/投递必须上传证据，否则会被认定为未操作。
-5. 如发现问题，立即调用 dcp_update_order(action=dispute) 发起争议，不要等待。
-6. 使用 dcp_notifications(unread=true, mark_read=true) 定期检查待处理事项。
+5. 如发现问题，立即调用 webaz_update_order(action=dispute) 发起争议，不要等待。
+6. 使用 webaz_notifications(unread=true, mark_read=true) 定期检查待处理事项。
 
 ⚠️ 关键规则：所有截止时间都是硬性规定，超时自动判责，与对方沟通无法延期。`,
 
   decision_tree: {
-    '我是买家，想购买某件商品': ['dcp_search → dcp_place_order → 等通知 → dcp_update_order(confirm)'],
-    '我是卖家，有新订单通知':   ['dcp_get_status → dcp_update_order(accept) → dcp_update_order(ship, evidence)'],
-    '我是物流，需要揽收':       ['dcp_update_order(pickup, evidence) → dcp_update_order(deliver, evidence)'],
-    '收到货物有问题':           ['立即 dcp_update_order(dispute, evidence_description) → dcp_dispute(respond)'],
-    '我是仲裁员':               ['dcp_dispute(list_open) → dcp_dispute(view) → dcp_dispute(arbitrate, ruling, reason)'],
+    '我是买家，想购买某件商品': ['webaz_search → webaz_place_order → 等通知 → webaz_update_order(confirm)'],
+    '我是卖家，有新订单通知':   ['webaz_get_status → webaz_update_order(accept) → webaz_update_order(ship, evidence)'],
+    '我是物流，需要揽收':       ['webaz_update_order(pickup, evidence) → webaz_update_order(deliver, evidence)'],
+    '收到货物有问题':           ['立即 webaz_update_order(dispute, evidence_description) → webaz_dispute(respond)'],
+    '我是仲裁员':               ['webaz_dispute(list_open) → webaz_dispute(view) → webaz_dispute(arbitrate, ruling, reason)'],
   },
 }
 
@@ -284,11 +284,11 @@ export function generateManifest(db?: Database.Database) {
     generated_at: new Date().toISOString(),
 
     protocol: {
-      name:        'DCP',
-      full_name:   'Decentralized Commerce Protocol',
+      name:        'WebAZ',
+      full_name:   'WebAZ',
       version:     MANIFEST_VERSION,
       tagline:     'AI Agent 原生商业协议 — 任何 Agent 可以买货、卖货、送货',
-      description: 'DCP 是一个专为 AI Agent 设计的去中心化商业协议。协议通过状态机强制每个参与方按时举证，超时自动判责，资金自动结算。任何 AI Agent 接入 MCP 工具后即可立即参与真实商业交易。',
+      description: 'WebAZ 是一个专为 AI Agent 设计的去中心化商业协议。协议通过状态机强制每个参与方按时举证，超时自动判责，资金自动结算。任何 AI Agent 接入 MCP 工具后即可立即参与真实商业交易。',
       phase:       'Phase 0 — 概念验证（SQLite 模拟，无需真实货币）',
       roadmap: {
         phase0: '✅ 完成 — 状态机、资金托管、争议仲裁、通知、Skill 市场、声誉积分',
@@ -326,11 +326,11 @@ function getLiveStats(db: Database.Database) {
   }
 }
 
-// ─── 格式化输出（供 dcp_info 使用）──────────────────────────
+// ─── 格式化输出（供 webaz_info 使用）──────────────────────────
 
 export function getManifestSummary() {
   return {
-    name:        'DCP — Decentralized Commerce Protocol',
+    name:        'WebAZ',
     version:     MANIFEST_VERSION,
     tagline:     'AI Agent 原生商业协议',
     roles_count: Object.keys(ROLES).length,

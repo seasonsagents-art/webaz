@@ -49,6 +49,8 @@ import {
 import { generateManifest } from '../layer0-foundation/L0-5-manifest/manifest.js'
 import Anthropic from '@anthropic-ai/sdk'
 import { privateKeyToAddress } from 'viem/accounts'
+import { createPublicClient, http, parseAbiItem, type Log } from 'viem'
+import { baseSepolia } from 'viem/chains'
 import { createHmac } from 'node:crypto'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -82,6 +84,21 @@ db.exec(`
     created_at  TEXT DEFAULT (datetime('now')),
     processed_at TEXT,
     tx_hash     TEXT
+  )
+`)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS deposit_txns (
+    tx_hash      TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    amount       REAL NOT NULL,
+    block_number INTEGER,
+    created_at   TEXT DEFAULT (datetime('now'))
+  )
+`)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS system_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT
   )
 `)
 
@@ -600,6 +617,15 @@ app.get('/api/wallet/withdrawals', (req, res) => {
   res.json(list)
 })
 
+// 我的充值记录
+app.get('/api/wallet/deposits', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  const list = db.prepare(
+    `SELECT tx_hash, amount, block_number, created_at FROM deposit_txns WHERE user_id = ? ORDER BY created_at DESC LIMIT 10`
+  ).all(user.id)
+  res.json(list)
+})
+
 // 充值测试 WAZ（Phase 0 专用，最多单次 1000，余额上限 5000）
 app.post('/api/wallet/topup', (req, res) => {
   const user = auth(req, res); if (!user) return
@@ -1067,6 +1093,84 @@ function runEnforcement() {
   }
 }
 
+// ─── 链上充值监听（Base Sepolia USDC）────────────────────────────
+
+const USDC_SEPOLIA = '0x036CbD53842c5426634e7929541eC2318f3dCF7e' as const
+const USDC_DECIMALS = 6
+const DEPOSIT_POLL_MS = 60_000  // 每分钟扫一次
+
+const transferEvent = parseAbiItem(
+  'event Transfer(address indexed from, address indexed to, uint256 value)'
+)
+
+const rpcUrl = process.env.BASE_RPC_URL ?? 'https://sepolia.base.org'
+const publicClient = createPublicClient({
+  chain: baseSepolia,
+  transport: http(rpcUrl),
+})
+
+async function checkDeposits() {
+  // 取所有平台充值地址
+  const rows = db.prepare(
+    'SELECT user_id, deposit_address FROM wallets WHERE deposit_address IS NOT NULL'
+  ).all() as { user_id: string; deposit_address: string }[]
+  if (rows.length === 0) return
+
+  const addrToUser = new Map(rows.map(r => [r.deposit_address.toLowerCase(), r.user_id]))
+
+  // 确定扫描范围
+  const latestBlock = await publicClient.getBlockNumber()
+  const savedRow = db.prepare("SELECT value FROM system_state WHERE key = 'last_deposit_block'").get() as { value: string } | undefined
+  const fromBlock = savedRow ? BigInt(savedRow.value) + 1n : latestBlock - 50n
+
+  if (fromBlock > latestBlock) return
+
+  // 拉取 USDC Transfer 事件（to = 平台地址）
+  const logs = await publicClient.getLogs({
+    address: USDC_SEPOLIA,
+    event: transferEvent,
+    args: { to: rows.map(r => r.deposit_address as `0x${string}`) },
+    fromBlock,
+    toBlock: latestBlock,
+  })
+
+  for (const log of logs as (Log & { args: { to: string; value: bigint }; transactionHash: string; blockNumber: bigint })[]) {
+    const txHash = log.transactionHash
+    const toAddr = log.args.to?.toLowerCase()
+    const userId = addrToUser.get(toAddr)
+    if (!userId) continue
+
+    // 去重
+    const already = db.prepare('SELECT 1 FROM deposit_txns WHERE tx_hash = ?').get(txHash)
+    if (already) continue
+
+    const amount = Number(log.args.value) / 10 ** USDC_DECIMALS
+
+    // 写入充值记录
+    db.prepare('INSERT INTO deposit_txns (tx_hash, user_id, amount, block_number) VALUES (?,?,?,?)')
+      .run(txHash, userId, amount, Number(log.blockNumber))
+
+    // 更新余额
+    db.prepare('UPDATE wallets SET balance = balance + ? WHERE user_id = ?').run(amount, userId)
+
+    // 站内通知
+    const userName = (db.prepare('SELECT name FROM users WHERE id = ?').get(userId) as { name: string } | undefined)?.name ?? userId
+    console.log(`💰 充值到账：${userName} +${amount} WAZ  (${txHash.slice(0, 10)}...)`)
+  }
+
+  // 更新最后扫描块
+  db.prepare("INSERT OR REPLACE INTO system_state (key, value) VALUES ('last_deposit_block', ?)")
+    .run(latestBlock.toString())
+}
+
+function startDepositWatcher() {
+  checkDeposits().catch(e => console.error('充值扫描出错：', e.message))
+  setInterval(() => {
+    checkDeposits().catch(e => console.error('充值扫描出错：', e.message))
+  }, DEPOSIT_POLL_MS)
+  console.log(`⛓  充值监听已启动（Base Sepolia，每 ${DEPOSIT_POLL_MS / 1000}s 扫描）`)
+}
+
 // ─── 启动 ─────────────────────────────────────────────────────
 
 const PORT = Number(process.env.PORT) || 3000
@@ -1078,4 +1182,7 @@ app.listen(PORT, () => {
   runEnforcement()
   setInterval(runEnforcement, ENFORCE_INTERVAL_MS)
   console.log(`⚡ 自动执法已启动（每 ${ENFORCE_INTERVAL_MS / 60000} 分钟扫描）`)
+
+  // 链上充值监听
+  startDepositWatcher()
 })

@@ -8,7 +8,7 @@
   },
   "mcpName": "io.github.seasonsagents-art/webaz",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp -r src/pwa/public dist/pwa/",
     "prepare": "npm run build",
     "dev": "tsx src/index.ts",
     "mcp": "tsx src/mcp.ts",

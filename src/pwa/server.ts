@@ -1156,7 +1156,8 @@ const transferEvent = parseAbiItem(
   'event Transfer(address indexed from, address indexed to, uint256 value)'
 )
 
-const rpcUrl = process.env.BASE_RPC_URL ?? 'https://sepolia.base.org'
+const _rpcRaw = process.env.BASE_RPC_URL ?? 'sepolia.base.org'
+const rpcUrl = _rpcRaw.startsWith('http') ? _rpcRaw : `https://${_rpcRaw}`
 
 const publicClient = createPublicClient({
   chain: baseSepolia,

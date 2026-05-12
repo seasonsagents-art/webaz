@@ -363,6 +363,17 @@ const _EN = {
   '物流': 'Logistics',
   '仲裁员': 'Arbitrator',
 
+  // ── Smart Import ─────────────────────────────────────────────
+  '导入': 'Import',
+  '一键导入商品': 'Import Product',
+  '粘贴任意平台商品链接，AI 自动提取信息并给出定价建议': 'Paste any platform link — AI extracts info and suggests pricing',
+  '粘贴淘宝 / 京东 / 亚马逊 / Shopify 等链接': 'Paste Taobao / JD / Amazon / Shopify link...',
+  '解析': 'Analyze',
+  '解析中...': 'Analyzing...',
+  '解析完成，确认后上架': 'Review & publish',
+  '确认上架': 'Confirm & List',
+  '点击切换': 'Click to switch',
+
   // ── Search ───────────────────────────────────────────────────
   '没有找到"': 'No results for "',
   '个人资料 & 设置': 'Profile & Settings',

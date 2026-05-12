@@ -225,10 +225,10 @@ async function renderProfile(app) {
         <div style="font-size:13px;color:#6b7280;margin-bottom:8px">${t('已有角色')}</div>
         <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px">
           ${roles.map(r => `
-            <button onclick="switchRole('${r}')" style="
+            <button onclick="switchRole('${r}', this)" style="
               display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:10px;font-size:14px;cursor:pointer;border:2px solid;
               ${r === data.role ? 'background:#eff6ff;border-color:#3b82f6;color:#1d4ed8;font-weight:600' : 'background:#f9fafb;border-color:#e5e7eb;color:#374151'}
-            " title="${r === data.role ? t('当前激活') : '点击切换'}">
+            " title="${r === data.role ? t('当前激活') : t('点击切换')}">
               ${roleIcons[r]} ${roleLabels[r]}
               ${r === data.role ? `<span style="font-size:11px;color:#3b82f6">${t('● 激活')}</span>` : ''}
             </button>
@@ -239,7 +239,7 @@ async function renderProfile(app) {
           <div style="font-size:13px;color:#6b7280;margin-bottom:8px">${t('添加新角色')}</div>
           <div style="display:flex;flex-wrap:wrap;gap:8px">
             ${addable.map(r => `
-              <button onclick="addRole('${r}')" style="
+              <button onclick="addRole('${r}', this)" style="
                 display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:10px;font-size:14px;cursor:pointer;
                 background:#f9fafb;border:2px dashed #d1d5db;color:#6b7280
               ">${roleIcons[r]} + ${roleLabels[r]}</button>
@@ -287,18 +287,26 @@ function copyApiKey(key) {
   })
 }
 
-async function switchRole(role) {
+async function switchRole(role, btn) {
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.6' }
   const res = await POST('/profile/switch-role', { role })
-  if (res.error) return void (document.getElementById('profile-msg').innerHTML = alert$('error', res.error))
+  if (res.error) {
+    if (btn) { btn.disabled = false; btn.style.opacity = '' }
+    return void (document.getElementById('profile-msg').innerHTML = alert$('error', res.error))
+  }
   state.user = null
-  navigate('#profile')
+  renderProfile(document.getElementById('app'))
 }
 
-async function addRole(role) {
+async function addRole(role, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '...'; btn.style.opacity = '0.6' }
   const res = await POST('/profile/add-role', { role })
-  if (res.error) return void (document.getElementById('profile-msg').innerHTML = alert$('error', res.error))
+  if (res.error) {
+    if (btn) { btn.disabled = false; btn.style.opacity = '' }
+    return void (document.getElementById('profile-msg').innerHTML = alert$('error', res.error))
+  }
   state.user = null
-  navigate('#profile')
+  renderProfile(document.getElementById('app'))
 }
 
 async function recoverKey() {
@@ -1467,9 +1475,56 @@ async function renderSeller(app) {
 
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <div style="font-weight:700">${t('我的商品')}</div>
-      <button class="btn btn-primary btn-sm" onclick="showAddProduct()">${t('+ 上架')}</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-outline btn-sm" onclick="showImportProduct()">🔗 ${t('导入')}</button>
+        <button class="btn btn-primary btn-sm" onclick="showAddProduct()">${t('+ 上架')}</button>
+      </div>
     </div>
     ${productsHtml}
+
+    <!-- 一键导入面板 -->
+    <div id="import-product-form" style="display:none">
+      <div class="divider"></div>
+      <div class="card">
+        <div style="font-weight:700;margin-bottom:4px">🔗 ${t('一键导入商品')}</div>
+        <div style="font-size:13px;color:#6b7280;margin-bottom:16px">${t('粘贴任意平台商品链接，AI 自动提取信息并给出定价建议')}</div>
+        <div id="import-msg"></div>
+        <div style="display:flex;gap:8px;margin-bottom:16px">
+          <input class="form-control" id="import-url" placeholder="${t('粘贴淘宝 / 京东 / 亚马逊 / Shopify 等链接')}" style="flex:1">
+          <button class="btn btn-primary" id="btn-import" onclick="doImportProduct()" style="white-space:nowrap">✨ ${t('解析')}</button>
+        </div>
+        <!-- 预览区（解析后显示） -->
+        <div id="import-preview" style="display:none">
+          <div class="divider"></div>
+          <div style="font-size:13px;font-weight:600;color:#4f46e5;margin-bottom:12px">✅ ${t('解析完成，确认后上架')}</div>
+          <div class="form-group"><label class="form-label">${t('商品名称')}</label><input class="form-control" id="imp-title"></div>
+          <div class="form-group"><label class="form-label">${t('商品描述')}</label><textarea class="form-control" id="imp-desc" rows="4"></textarea></div>
+          <div style="display:flex;gap:12px">
+            <div class="form-group" style="flex:1">
+              <label class="form-label">${t('价格（WAZ）')}</label>
+              <input class="form-control" id="imp-price" type="number">
+            </div>
+            <div class="form-group" style="flex:1">
+              <label class="form-label">${t('库存数量')}</label>
+              <input class="form-control" id="imp-stock" type="number" value="1">
+            </div>
+          </div>
+          <div id="imp-price-hint" style="font-size:12px;color:#059669;margin:-8px 0 12px;padding:8px 12px;background:#f0fdf4;border-radius:6px;display:none"></div>
+          <div class="form-group"><label class="form-label">${t('分类（可选）')}</label>
+            <select class="form-control" id="imp-cat">
+              <option value="">${t('不分类')}</option>
+              <option value="茶具">${t('茶具')}</option><option value="家居">${t('家居')}</option>
+              <option value="食品">${t('食品')}</option><option value="服装">${t('服装')}</option>
+              <option value="手工">${t('手工')}</option><option value="电子">${t('电子')}</option>
+            </select>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-gray" onclick="hideImportProduct()">${t('取消')}</button>
+            <button class="btn btn-primary" onclick="doPublishImported()">${t('确认上架')}</button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <div id="add-product-form" style="display:none">
       <div class="divider"></div>
@@ -1531,6 +1586,66 @@ async function renderSeller(app) {
 
 window.showAddProduct = () => { document.getElementById('add-product-form').style.display = '' }
 window.hideAddProduct = () => { document.getElementById('add-product-form').style.display = 'none' }
+
+window.showImportProduct = () => {
+  document.getElementById('import-product-form').style.display = ''
+  document.getElementById('import-preview').style.display = 'none'
+  document.getElementById('import-msg').innerHTML = ''
+  document.getElementById('import-url').value = ''
+}
+window.hideImportProduct = () => { document.getElementById('import-product-form').style.display = 'none' }
+
+window.doImportProduct = async () => {
+  const url = document.getElementById('import-url').value.trim()
+  if (!url) return
+  const btn = document.getElementById('btn-import')
+  const msgEl = document.getElementById('import-msg')
+  btn.disabled = true; btn.textContent = t('解析中...')
+  msgEl.innerHTML = ''
+  document.getElementById('import-preview').style.display = 'none'
+
+  const res = await POST('/import-product', { url })
+  btn.disabled = false; btn.textContent = `✨ ${t('解析')}`
+
+  if (res.error) return void (msgEl.innerHTML = alert$('error', res.error))
+
+  // 填入预览表单
+  document.getElementById('imp-title').value = res.title || ''
+  document.getElementById('imp-desc').value = res.description || ''
+  document.getElementById('imp-price').value = res.suggested_price || ''
+  document.getElementById('imp-stock').value = res.stock || 1
+  const catEl = document.getElementById('imp-cat')
+  if (res.category) {
+    const opt = [...catEl.options].find(o => o.value === res.category)
+    if (opt) catEl.value = res.category
+  }
+
+  // 显示定价建议
+  const hintEl = document.getElementById('imp-price-hint')
+  if (res.price_reasoning) {
+    hintEl.textContent = `💡 ${res.price_reasoning}${res.original_price ? `（原价参考：${res.original_price} CNY）` : ''}`
+    hintEl.style.display = ''
+  }
+
+  document.getElementById('import-preview').style.display = ''
+}
+
+window.doPublishImported = async () => {
+  const title    = document.getElementById('imp-title').value.trim()
+  const desc     = document.getElementById('imp-desc').value.trim()
+  const price    = Number(document.getElementById('imp-price').value)
+  const stock    = Number(document.getElementById('imp-stock').value) || 1
+  const category = document.getElementById('imp-cat').value
+  const msgEl    = document.getElementById('import-msg')
+
+  if (!title || !desc || !price) return void (msgEl.innerHTML = alert$('error', t('请填写商品名、描述、价格')))
+
+  const res = await POST('/products', { title, description: desc, price, stock, category })
+  if (res.error) return void (msgEl.innerHTML = alert$('error', res.error))
+
+  msgEl.innerHTML = alert$('success', `${t('上架成功！质押')} ${res.stake_locked} WAZ ${t('已锁定')}`)
+  setTimeout(() => renderSeller(document.getElementById('app')), 1500)
+}
 
 window.doAddProduct = async () => {
   const title = document.getElementById('prd-title').value.trim()

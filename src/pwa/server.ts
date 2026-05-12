@@ -47,6 +47,9 @@ import {
   getStakeDiscount,
 } from '../layer4-economics/L4-3-reputation/reputation-engine.js'
 import { generateManifest } from '../layer0-foundation/L0-5-manifest/manifest.js'
+import Anthropic from '@anthropic-ai/sdk'
+
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -206,8 +209,95 @@ app.post('/api/products', (req, res) => {
   res.json({ success: true, product_id: id, stake_locked: stakeAmount })
 })
 
+// 一键导入商品（smart_import）
+app.post('/api/import-product', async (req: Request, res: Response) => {
+  const user = auth(req, res); if (!user) return
+  if (user.role !== 'seller') return void res.json({ error: '仅卖家可使用导入功能' })
+
+  const { url } = req.body
+  if (!url) return void res.json({ error: '请提供商品链接' })
+
+  // 抓取页面 HTML
+  let html = ''
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 10000)
+    const resp = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; WebAZ/1.0; +https://webaz.xyz)',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      },
+    })
+    clearTimeout(timer)
+    const raw = await resp.text()
+    // 截取前 30000 字符，避免超 token 限制
+    html = raw.slice(0, 30000)
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return void res.json({ error: `无法访问该链接：${msg}` })
+  }
+
+  // 查询 WebAZ 同类商品均价（用于定价建议）
+  const avgPrices = db.prepare(`
+    SELECT category, AVG(price) as avg_price, MIN(price) as min_price, MAX(price) as max_price, COUNT(*) as cnt
+    FROM products WHERE status = 'active' GROUP BY category
+  `).all() as { category: string; avg_price: number; min_price: number; max_price: number; cnt: number }[]
+
+  const priceContext = avgPrices.map(r =>
+    `${r.category || '未分类'}：均价 ${r.avg_price?.toFixed(0)} WAZ，最低 ${r.min_price} WAZ，最高 ${r.max_price} WAZ（${r.cnt} 件商品）`
+  ).join('\n')
+
+  // 调用 Claude 提取结构化商品数据
+  let extracted: Record<string, unknown>
+  try {
+    const message = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      messages: [{
+        role: 'user',
+        content: `你是一个电商商品信息提取助手。从以下网页 HTML 中提取商品信息，并返回 JSON 格式结果。
+
+网页来源 URL：${url}
+
+WebAZ 平台当前各类目价格参考（WAZ 为协议货币，1 WAZ ≈ 1 CNY）：
+${priceContext || '暂无参考数据'}
+
+请提取并返回以下 JSON 格式（只返回 JSON，不要其他文字）：
+{
+  "title": "商品标题（简洁，50字以内）",
+  "description": "商品描述（详细说明材质/规格/特点/适用场景，200字以内，适合 AI Agent 检索）",
+  "original_price": 原平台价格数字（CNY，找不到则 null），
+  "suggested_price": 建议 WAZ 定价数字（参考原价和平台均价，给出有竞争力的价格），
+  "price_reasoning": "定价建议理由（1-2句）",
+  "category": "类目（从以下选一个：茶具/家居/食品/服装/手工/电子，其他填空字符串）",
+  "stock": 建议库存数量（默认1），
+  "tags": ["标签1", "标签2"]（3-5个关键词标签）
+}
+
+HTML 内容（前 30000 字符）：
+${html}`,
+      }],
+    })
+
+    const text = message.content[0].type === 'text' ? message.content[0].text : ''
+    const jsonMatch = text.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) throw new Error('未能提取 JSON')
+    extracted = JSON.parse(jsonMatch[0])
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return void res.json({ error: `AI 解析失败：${msg}` })
+  }
+
+  res.json({
+    success: true,
+    source_url: url,
+    ...extracted,
+  })
+})
+
 // 我的订单（买家或卖家视角）
-app.get('/api/orders', (req, res) => {
+app.get('/api/orders', (req: Request, res: Response) => {
   const user = auth(req, res); if (!user) return
   const orders = db.prepare(`
     SELECT o.*, p.title as product_title, p.images,

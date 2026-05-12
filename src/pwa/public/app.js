@@ -1489,10 +1489,8 @@ async function renderSeller(app) {
         <div style="font-weight:700;margin-bottom:4px">🔗 ${t('一键导入商品')}</div>
         <div style="font-size:13px;color:#6b7280;margin-bottom:16px">${t('粘贴任意平台商品链接，AI 自动提取信息并给出定价建议')}</div>
         <div id="import-msg"></div>
-        <div style="display:flex;gap:8px;margin-bottom:12px">
-          <input class="form-control" id="import-url" placeholder="${t('粘贴淘宝 / 京东 / 亚马逊 / Shopify 等链接')}" style="flex:1">
-          <button class="btn btn-primary" id="btn-import" onclick="doImportProduct()" style="white-space:nowrap">✨ ${t('解析')}</button>
-        </div>
+        <input class="form-control" id="import-url" placeholder="${t('粘贴淘宝 / 京东 / 亚马逊 / Shopify 等链接')}" style="margin-bottom:8px">
+        <button class="btn btn-primary" id="btn-import" onclick="doImportProduct()">✨ ${t('解析')}</button>
         <div id="import-quota" style="font-size:12px;color:#6b7280;margin-bottom:8px"></div>
         <details style="margin-bottom:16px">
           <summary style="font-size:12px;color:#9ca3af;cursor:pointer">${t('使用自己的 Anthropic API Key（不限次数）')}</summary>

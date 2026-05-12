@@ -1,0 +1,10 @@
+[build]
+builder = "nixpacks"
+buildCommand = "npm run build"
+
+[deploy]
+startCommand = "node dist/pwa/server.js"
+restartPolicyType = "on_failure"
+
+[[volumes]]
+mountPath = "/root/.webaz"

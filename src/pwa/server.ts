@@ -209,13 +209,40 @@ app.post('/api/products', (req, res) => {
   res.json({ success: true, product_id: id, stake_locked: stakeAmount })
 })
 
+// 初始化导入次数追踪表
+db.exec(`
+  CREATE TABLE IF NOT EXISTS import_logs (
+    id         TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  )
+`)
+
+const FREE_IMPORT_LIMIT = 10
+
 // 一键导入商品（smart_import）
 app.post('/api/import-product', async (req: Request, res: Response) => {
   const user = auth(req, res); if (!user) return
   if (user.role !== 'seller') return void res.json({ error: '仅卖家可使用导入功能' })
 
-  const { url } = req.body
+  const { url, user_api_key } = req.body
   if (!url) return void res.json({ error: '请提供商品链接' })
+
+  // 检查每日额度（用自己 Key 则跳过）
+  const usingOwnKey = typeof user_api_key === 'string' && user_api_key.trim().startsWith('sk-ant-')
+  if (!usingOwnKey) {
+    const todayCount = (db.prepare(
+      `SELECT COUNT(*) as cnt FROM import_logs WHERE user_id = ? AND created_at >= datetime('now', '-1 day')`
+    ).get(user.id) as { cnt: number }).cnt
+    if (todayCount >= FREE_IMPORT_LIMIT) {
+      return void res.json({
+        error: `今日免费导入次数已用完（${FREE_IMPORT_LIMIT} 次/天）。请在导入面板填入你自己的 Anthropic API Key 以继续使用。`,
+        quota_exceeded: true,
+        used: todayCount,
+        limit: FREE_IMPORT_LIMIT,
+      })
+    }
+  }
 
   // 抓取页面 HTML
   let html = ''
@@ -231,7 +258,6 @@ app.post('/api/import-product', async (req: Request, res: Response) => {
     })
     clearTimeout(timer)
     const raw = await resp.text()
-    // 截取前 30000 字符，避免超 token 限制
     html = raw.slice(0, 30000)
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
@@ -249,9 +275,13 @@ app.post('/api/import-product', async (req: Request, res: Response) => {
   ).join('\n')
 
   // 调用 Claude 提取结构化商品数据
+  const client = usingOwnKey
+    ? new Anthropic({ apiKey: user_api_key.trim() })
+    : anthropic
+
   let extracted: Record<string, unknown>
   try {
-    const message = await anthropic.messages.create({
+    const message = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
       messages: [{
@@ -289,9 +319,21 @@ ${html}`,
     return void res.json({ error: `AI 解析失败：${msg}` })
   }
 
+  // 记录本次使用（仅平台 Key 计入额度）
+  if (!usingOwnKey) {
+    db.prepare(`INSERT INTO import_logs (id, user_id) VALUES (?, ?)`).run(generateId('iml'), user.id)
+  }
+
+  // 查询今日剩余次数
+  const usedToday = usingOwnKey ? 0 : (db.prepare(
+    `SELECT COUNT(*) as cnt FROM import_logs WHERE user_id = ? AND created_at >= datetime('now', '-1 day')`
+  ).get(user.id) as { cnt: number }).cnt
+
   res.json({
     success: true,
     source_url: url,
+    used_own_key: usingOwnKey,
+    quota: usingOwnKey ? null : { used: usedToday, limit: FREE_IMPORT_LIMIT, remaining: FREE_IMPORT_LIMIT - usedToday },
     ...extracted,
   })
 })

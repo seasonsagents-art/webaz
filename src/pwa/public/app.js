@@ -1489,10 +1489,23 @@ async function renderSeller(app) {
         <div style="font-weight:700;margin-bottom:4px">🔗 ${t('一键导入商品')}</div>
         <div style="font-size:13px;color:#6b7280;margin-bottom:16px">${t('粘贴任意平台商品链接，AI 自动提取信息并给出定价建议')}</div>
         <div id="import-msg"></div>
-        <div style="display:flex;gap:8px;margin-bottom:16px">
+        <div style="display:flex;gap:8px;margin-bottom:12px">
           <input class="form-control" id="import-url" placeholder="${t('粘贴淘宝 / 京东 / 亚马逊 / Shopify 等链接')}" style="flex:1">
           <button class="btn btn-primary" id="btn-import" onclick="doImportProduct()" style="white-space:nowrap">✨ ${t('解析')}</button>
         </div>
+        <div id="import-quota" style="font-size:12px;color:#6b7280;margin-bottom:8px"></div>
+        <details style="margin-bottom:16px">
+          <summary style="font-size:12px;color:#9ca3af;cursor:pointer">${t('使用自己的 Anthropic API Key（不限次数）')}</summary>
+          <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+            <input class="form-control" id="import-own-key" type="password"
+              placeholder="sk-ant-..."
+              style="font-family:monospace;font-size:12px;flex:1"
+              value="${localStorage.getItem('webaz_own_ak') || ''}"
+              oninput="localStorage.setItem('webaz_own_ak', this.value.trim())">
+            <button class="btn btn-outline btn-sm" onclick="localStorage.removeItem('webaz_own_ak');document.getElementById('import-own-key').value=''" style="white-space:nowrap">${t('清除')}</button>
+          </div>
+          <div style="font-size:11px;color:#9ca3af;margin-top:4px">${t('Key 仅存储在本地，不上传服务器，用完即丢')}</div>
+        </details>
         <!-- 预览区（解析后显示） -->
         <div id="import-preview" style="display:none">
           <div class="divider"></div>
@@ -1600,14 +1613,35 @@ window.doImportProduct = async () => {
   if (!url) return
   const btn = document.getElementById('btn-import')
   const msgEl = document.getElementById('import-msg')
+  const quotaEl = document.getElementById('import-quota')
+  const ownKey = localStorage.getItem('webaz_own_ak') || ''
+
   btn.disabled = true; btn.textContent = t('解析中...')
   msgEl.innerHTML = ''
   document.getElementById('import-preview').style.display = 'none'
 
-  const res = await POST('/import-product', { url })
+  const res = await POST('/import-product', { url, user_api_key: ownKey || undefined })
   btn.disabled = false; btn.textContent = `✨ ${t('解析')}`
 
-  if (res.error) return void (msgEl.innerHTML = alert$('error', res.error))
+  // 更新额度显示
+  if (res.quota) {
+    quotaEl.textContent = `${t('今日剩余免费次数')}：${res.quota.remaining} / ${res.quota.limit}`
+    quotaEl.style.color = res.quota.remaining <= 2 ? '#dc2626' : '#6b7280'
+  } else if (res.used_own_key) {
+    quotaEl.textContent = `✓ ${t('使用自己的 Key，不限次数')}`
+    quotaEl.style.color = '#059669'
+  }
+
+  if (res.error) {
+    if (res.quota_exceeded) {
+      msgEl.innerHTML = alert$('error', res.error)
+      // 自动展开 API Key 输入区
+      document.querySelector('#import-product-form details')?.setAttribute('open', '')
+    } else {
+      msgEl.innerHTML = alert$('error', res.error)
+    }
+    return
+  }
 
   // 填入预览表单
   document.getElementById('imp-title').value = res.title || ''
@@ -1623,7 +1657,7 @@ window.doImportProduct = async () => {
   // 显示定价建议
   const hintEl = document.getElementById('imp-price-hint')
   if (res.price_reasoning) {
-    hintEl.textContent = `💡 ${res.price_reasoning}${res.original_price ? `（原价参考：${res.original_price} CNY）` : ''}`
+    hintEl.textContent = `💡 ${res.price_reasoning}${res.original_price ? `（${t('原价参考')}：${res.original_price} CNY）` : ''}`
     hintEl.style.display = ''
   }
 

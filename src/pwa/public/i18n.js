@@ -373,6 +373,12 @@ const _EN = {
   '解析完成，确认后上架': 'Review & publish',
   '确认上架': 'Confirm & List',
   '点击切换': 'Click to switch',
+  '使用自己的 Anthropic API Key（不限次数）': 'Use your own Anthropic API Key (unlimited)',
+  'Key 仅存储在本地，不上传服务器，用完即丢': 'Key is stored locally only, never uploaded, discarded after use',
+  '今日剩余免费次数': 'Free imports remaining today',
+  '使用自己的 Key，不限次数': 'Using your own Key — unlimited',
+  '清除': 'Clear',
+  '原价参考': 'Original price ref',
 
   // ── Search ───────────────────────────────────────────────────
   '没有找到"': 'No results for "',

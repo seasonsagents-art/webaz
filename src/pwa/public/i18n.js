@@ -379,6 +379,8 @@ const _EN = {
   '使用自己的 Key，不限次数': 'Using your own Key — unlimited',
   '清除': 'Clear',
   '原价参考': 'Original price ref',
+  '改用手动上架': 'Switch to manual listing',
+  '提取内容为空，请尝试其他链接或改用手动上架': 'Nothing extracted. Try another link or use manual listing.',
 
   // ── Search ───────────────────────────────────────────────────
   '没有找到"': 'No results for "',

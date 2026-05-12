@@ -1633,16 +1633,24 @@ window.doImportProduct = async () => {
   if (res.error) {
     if (res.quota_exceeded) {
       msgEl.innerHTML = alert$('error', res.error)
-      // 自动展开 API Key 输入区
       document.querySelector('#import-product-form details')?.setAttribute('open', '')
+    } else if (res.suggestion === 'manual') {
+      msgEl.innerHTML = alert$('error', res.error) +
+        `<div style="margin-top:8px"><button class="btn btn-outline btn-sm" onclick="hideImportProduct();showAddProduct()">${t('改用手动上架')}</button></div>`
     } else {
       msgEl.innerHTML = alert$('error', res.error)
     }
     return
   }
 
-  // 填入预览表单
-  document.getElementById('imp-title').value = res.title || ''
+  // 填入预览表单（防御：验证关键字段非空）
+  const titleVal = res.title || ''
+  if (!titleVal) {
+    msgEl.innerHTML = alert$('error', t('提取内容为空，请尝试其他链接或改用手动上架')) +
+      `<div style="margin-top:8px"><button class="btn btn-outline btn-sm" onclick="hideImportProduct();showAddProduct()">${t('改用手动上架')}</button></div>`
+    return
+  }
+  document.getElementById('imp-title').value = titleVal
   document.getElementById('imp-desc').value = res.description || ''
   document.getElementById('imp-price').value = res.suggested_price || ''
   document.getElementById('imp-stock').value = res.stock || 1

@@ -319,6 +319,19 @@ ${html}`,
     return void res.json({ error: `AI 解析失败：${msg}` })
   }
 
+  // 验证提取结果有效（防止页面需要登录导致返回空内容）
+  const title = typeof extracted.title === 'string' ? extracted.title.trim() : ''
+  const description = typeof extracted.description === 'string' ? extracted.description.trim() : ''
+  if (!title || title.length < 2) {
+    return void res.json({
+      error: '该链接无法提取商品信息（可能需要登录、或为动态渲染页面）。建议使用京东/亚马逊/独立站链接，或改用手动上架。',
+      suggestion: 'manual',
+    })
+  }
+  if (!description || description.length < 5) {
+    extracted.description = title  // 至少用标题填充描述
+  }
+
   // 记录本次使用（仅平台 Key 计入额度）
   if (!usingOwnKey) {
     db.prepare(`INSERT INTO import_logs (id, user_id) VALUES (?, ?)`).run(generateId('iml'), user.id)

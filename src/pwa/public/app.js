@@ -1845,19 +1845,60 @@ async function renderWallet(app) {
     </div>
 
     <div class="card">
-      <div style="font-weight:700;margin-bottom:10px">💰 充值测试 WAZ</div>
-      <div style="font-size:13px;color:#6b7280;margin-bottom:12px">Phase 0 测试专用，单次最多 1000 WAZ，余额上限 5000 WAZ。</div>
-      <div id="topup-msg"></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        ${[100,300,500,1000].map(n => `
-          <button class="btn btn-outline btn-sm" style="width:auto;flex:1;min-width:60px"
-            onclick="doTopup(${n})">+${n}</button>`).join('')}
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <div style="font-weight:700;font-size:15px">${t('充值')}</div>
+        <span style="background:#dbeafe;color:#1d4ed8;font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px">Base Sepolia ${t('测试网')}</span>
+      </div>
+      <div style="font-size:13px;color:#6b7280;margin-bottom:10px">${t('向以下地址转入 USDC，系统确认后自动到账。')}</div>
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;margin-bottom:10px">
+        <div style="font-size:11px;color:#94a3b8;margin-bottom:4px">${t('您的充值地址')}</div>
+        <div style="font-family:monospace;font-size:13px;word-break:break-all;color:#1e293b;margin-bottom:8px" id="deposit-addr">
+          ${wallet.deposit_address ?? t('加载中...')}
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-outline btn-sm" style="width:auto;padding:4px 12px;font-size:12px"
+            onclick="doCopyAddress()">📋 ${t('复制地址')}</button>
+          <a href="https://sepolia.basescan.org/address/${wallet.deposit_address ?? ''}" target="_blank"
+            style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:#4f46e5;text-decoration:none;padding:4px 8px">
+            🔗 ${t('区块链浏览器')}
+          </a>
+        </div>
+      </div>
+      <div class="alert alert-info" style="font-size:12px;margin:0">
+        ${t('Base Sepolia 测试网 USDC 可在 Circle Faucet 免费获取。主网上线后同一地址直接使用。')}
       </div>
     </div>
 
-    <div class="alert alert-info" style="font-size:13px">
-      WAZ 为协议内模拟货币。Phase 2 将接入真实链上资产。
+    <div class="card">
+      <div style="font-weight:700;font-size:15px;margin-bottom:12px">${t('提现')}</div>
+      <div id="withdraw-msg"></div>
+      <div style="margin-bottom:10px">
+        <div style="font-size:12px;color:#6b7280;margin-bottom:4px">${t('收款地址（以太坊 / Base）')}</div>
+        <input id="withdraw-addr" type="text" placeholder="0x..."
+          style="width:100%;box-sizing:border-box;padding:9px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;font-family:monospace" autocomplete="off">
+      </div>
+      <div style="margin-bottom:12px">
+        <div style="font-size:12px;color:#6b7280;margin-bottom:4px">${t('提现金额（WAZ）')}</div>
+        <input id="withdraw-amount" type="number" min="10" placeholder="${t('最低 10 WAZ')}"
+          style="width:100%;box-sizing:border-box;padding:9px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:14px">
+      </div>
+      <button class="btn btn-primary" onclick="doWithdraw()">${t('申请提现')}</button>
+      <div style="font-size:12px;color:#9ca3af;margin-top:8px">${t('提现申请提交后 24 小时内处理并发送至链上地址。')}</div>
     </div>
+
+    <details style="margin-bottom:12px">
+      <summary style="font-size:13px;color:#9ca3af;cursor:pointer;padding:8px 0">🧪 ${t('测试模式：模拟充值')}</summary>
+      <div class="card" style="margin-top:8px">
+        <div style="font-size:12px;color:#6b7280;margin-bottom:10px">${t('开发测试专用，单次最多 1000 WAZ，余额上限 5000 WAZ。')}</div>
+        <div id="topup-msg"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${[100,300,500,1000].map(n => `
+            <button class="btn btn-outline btn-sm" style="width:auto;flex:1;min-width:60px"
+              onclick="doTopup(${n})">+${n}</button>`).join('')}
+        </div>
+      </div>
+    </details>
+
     <button class="btn btn-gray" onclick="doLogout()">${t('退出登录')}</button>
   `, 'wallet')
 }
@@ -1866,6 +1907,27 @@ window.doLogout = () => {
   state.apiKey = null; state.user = null
   localStorage.removeItem('webaz_key')
   navigate('#login')
+}
+
+window.doCopyAddress = () => {
+  const el = document.getElementById('deposit-addr')
+  const addr = el?.textContent?.trim()
+  if (!addr || addr === t('加载中...')) return
+  navigator.clipboard.writeText(addr).then(() => {
+    const btn = el.parentElement?.querySelector('button')
+    if (btn) { btn.textContent = `✅ ${t('已复制')}`; setTimeout(() => { btn.textContent = `📋 ${t('复制地址')}` }, 1500) }
+  })
+}
+
+window.doWithdraw = async () => {
+  const addr = document.getElementById('withdraw-addr')?.value?.trim()
+  const amount = document.getElementById('withdraw-amount')?.value?.trim()
+  const msgEl = document.getElementById('withdraw-msg')
+  msgEl.innerHTML = `<div class="alert alert-info"><span class="spinner"></span>${t('提交中...')}</div>`
+  const res = await POST('/wallet/withdraw', { to_address: addr, amount: Number(amount) })
+  if (res.error) { msgEl.innerHTML = alert$('error', res.error); return }
+  msgEl.innerHTML = alert$('success', `✅ ${res.message}`)
+  setTimeout(() => renderWallet(document.getElementById('app')), 2000)
 }
 
 window.doTopup = async (amount) => {

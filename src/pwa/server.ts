@@ -48,8 +48,17 @@ import {
 } from '../layer4-economics/L4-3-reputation/reputation-engine.js'
 import { generateManifest } from '../layer0-foundation/L0-5-manifest/manifest.js'
 import Anthropic from '@anthropic-ai/sdk'
+import { privateKeyToAddress } from 'viem/accounts'
+import { createHmac } from 'node:crypto'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+
+// ─── 链上地址派生（确定性：masterSeed + userId → 私钥 → 地址）───
+function deriveDepositAddress(userId: string): string {
+  const masterSeed = process.env.WALLET_MASTER_SEED ?? 'webaz-dev-seed-changeme'
+  const privKeyHex = createHmac('sha256', masterSeed).update(userId).digest('hex') as `${string}`
+  return privateKeyToAddress(`0x${privKeyHex}`)
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -60,6 +69,21 @@ initNotificationSchema(db)
 initSkillSchema(db)
 initReputationSchema(db)
 initEvidenceRequestSchema(db)
+
+// ─── Schema 迁移（幂等）──────────────────────────────────────────
+try { db.exec('ALTER TABLE wallets ADD COLUMN deposit_address TEXT') } catch {}
+db.exec(`
+  CREATE TABLE IF NOT EXISTS withdrawal_requests (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    to_address  TEXT NOT NULL,
+    amount      REAL NOT NULL,
+    status      TEXT DEFAULT 'pending',
+    created_at  TEXT DEFAULT (datetime('now')),
+    processed_at TEXT,
+    tx_hash     TEXT
+  )
+`)
 
 const app = express()
 app.use(express.json())
@@ -526,8 +550,54 @@ app.post('/api/orders/:id/action', (req, res) => {
 // 钱包
 app.get('/api/wallet', (req, res) => {
   const user = auth(req, res); if (!user) return
-  const wallet = db.prepare('SELECT * FROM wallets WHERE user_id = ?').get(user.id)
+  const wallet = db.prepare('SELECT * FROM wallets WHERE user_id = ?').get(user.id) as Record<string, unknown>
+
+  // 生成并缓存链上充值地址（首次调用时派生）
+  if (!wallet.deposit_address) {
+    const addr = deriveDepositAddress(user.id as string)
+    db.prepare('UPDATE wallets SET deposit_address = ? WHERE user_id = ?').run(addr, user.id)
+    wallet.deposit_address = addr
+  }
+
   res.json(wallet)
+})
+
+// 提现申请（Phase 1：记录申请，人工处理；Phase 2 自动链上转账）
+app.post('/api/wallet/withdraw', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  const { to_address, amount } = req.body
+
+  if (!/^0x[0-9a-fA-F]{40}$/.test(to_address ?? '')) {
+    return void res.json({ error: '请输入有效的以太坊地址（0x 开头，42 位字符）' })
+  }
+  const amountNum = Number(amount)
+  if (!amountNum || amountNum <= 0) return void res.json({ error: '请输入提现金额' })
+  if (amountNum < 10) return void res.json({ error: '最低提现金额为 10 WAZ' })
+
+  const wallet = db.prepare('SELECT balance FROM wallets WHERE user_id = ?').get(user.id) as { balance: number }
+  if (wallet.balance < amountNum) {
+    return void res.json({ error: `余额不足：当前可用 ${wallet.balance.toFixed(2)} WAZ` })
+  }
+
+  const wid = generateId('wdr')
+  db.prepare(`INSERT INTO withdrawal_requests (id, user_id, to_address, amount) VALUES (?,?,?,?)`)
+    .run(wid, user.id, to_address, amountNum)
+  db.prepare('UPDATE wallets SET balance = balance - ? WHERE user_id = ?').run(amountNum, user.id)
+
+  res.json({
+    success: true,
+    request_id: wid,
+    message: '提现申请已提交，将在 24 小时内到账。',
+  })
+})
+
+// 我的提现记录
+app.get('/api/wallet/withdrawals', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  const list = db.prepare(
+    `SELECT id, to_address, amount, status, created_at, tx_hash FROM withdrawal_requests WHERE user_id = ? ORDER BY created_at DESC LIMIT 10`
+  ).all(user.id)
+  res.json(list)
 })
 
 // 充值测试 WAZ（Phase 0 专用，最多单次 1000，余额上限 5000）

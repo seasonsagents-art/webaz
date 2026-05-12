@@ -48,18 +48,22 @@ import {
 } from '../layer4-economics/L4-3-reputation/reputation-engine.js'
 import { generateManifest } from '../layer0-foundation/L0-5-manifest/manifest.js'
 import Anthropic from '@anthropic-ai/sdk'
-import { privateKeyToAddress } from 'viem/accounts'
-import { createPublicClient, http, parseAbiItem, type Log } from 'viem'
+import { privateKeyToAddress, privateKeyToAccount } from 'viem/accounts'
+import { createPublicClient, createWalletClient, http, parseAbiItem, parseAbi, parseEther, type Log } from 'viem'
 import { baseSepolia } from 'viem/chains'
 import { createHmac } from 'node:crypto'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-// ─── 链上地址派生（确定性：masterSeed + userId → 私钥 → 地址）───
+// ─── 链上地址派生 ──────────────────────────────────────────────
+const MASTER_SEED = process.env.WALLET_MASTER_SEED ?? 'webaz-dev-seed-changeme'
+
+function derivePrivKey(seed: string): `0x${string}` {
+  return `0x${createHmac('sha256', MASTER_SEED).update(seed).digest('hex')}`
+}
+
 function deriveDepositAddress(userId: string): string {
-  const masterSeed = process.env.WALLET_MASTER_SEED ?? 'webaz-dev-seed-changeme'
-  const privKeyHex = createHmac('sha256', masterSeed).update(userId).digest('hex') as `${string}`
-  return privateKeyToAddress(`0x${privKeyHex}`)
+  return privateKeyToAddress(derivePrivKey(userId))
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -92,9 +96,11 @@ db.exec(`
     user_id      TEXT NOT NULL,
     amount       REAL NOT NULL,
     block_number INTEGER,
+    swept        INTEGER DEFAULT 0,
     created_at   TEXT DEFAULT (datetime('now'))
   )
 `)
+try { db.exec('ALTER TABLE deposit_txns ADD COLUMN swept INTEGER DEFAULT 0') } catch {}
 db.exec(`
   CREATE TABLE IF NOT EXISTS system_state (
     key   TEXT PRIMARY KEY,
@@ -621,9 +627,51 @@ app.get('/api/wallet/withdrawals', (req, res) => {
 app.get('/api/wallet/deposits', (req, res) => {
   const user = auth(req, res); if (!user) return
   const list = db.prepare(
-    `SELECT tx_hash, amount, block_number, created_at FROM deposit_txns WHERE user_id = ? ORDER BY created_at DESC LIMIT 10`
+    `SELECT tx_hash, amount, block_number, swept, created_at FROM deposit_txns WHERE user_id = ? ORDER BY created_at DESC LIMIT 10`
   ).all(user.id)
   res.json(list)
+})
+
+// ─── 管理员端点 ───────────────────────────────────────────────
+
+function adminAuth(req: Request, res: Response): boolean {
+  const adminKey = process.env.ADMIN_KEY
+  if (!adminKey) { res.status(503).json({ error: '管理功能未启用（未设置 ADMIN_KEY）' }); return false }
+  if (req.headers['x-admin-key'] !== adminKey) { res.status(403).json({ error: '认证失败' }); return false }
+  return true
+}
+
+// 热钱包状态
+app.get('/api/admin/hot-wallet', async (req, res) => {
+  if (!adminAuth(req, res)) return
+  try {
+    const balance = await publicClient.readContract({
+      address: USDC_SEPOLIA, abi: USDC_ABI,
+      functionName: 'balanceOf', args: [HOT_WALLET_ADDR],
+    }) as bigint
+    res.json({ address: HOT_WALLET_ADDR, usdc_balance: Number(balance) / 1e6 })
+  } catch (e) {
+    res.json({ address: HOT_WALLET_ADDR, usdc_balance: null, error: (e as Error).message })
+  }
+})
+
+// 待处理提现列表
+app.get('/api/admin/withdrawals', (req, res) => {
+  if (!adminAuth(req, res)) return
+  const list = db.prepare(`
+    SELECT wr.*, u.name as user_name
+    FROM withdrawal_requests wr JOIN users u ON wr.user_id = u.id
+    WHERE wr.status = 'pending' ORDER BY wr.created_at ASC
+  `).all()
+  res.json(list)
+})
+
+// 批准并执行提现
+app.post('/api/admin/withdrawals/:id/approve', async (req, res) => {
+  if (!adminAuth(req, res)) return
+  const result = await executeWithdrawal(req.params.id).catch(e => ({ success: false as const, error: (e as Error).message, txHash: undefined }))
+  if (!result.success) return void res.json({ error: result.error })
+  res.json({ success: true, tx_hash: result.txHash })
 })
 
 // 充值测试 WAZ（Phase 0 专用，最多单次 1000，余额上限 5000）
@@ -1093,24 +1141,108 @@ function runEnforcement() {
   }
 }
 
-// ─── 链上充值监听（Base Sepolia USDC）────────────────────────────
+// ─── 链上基础配置 ─────────────────────────────────────────────
 
-const USDC_SEPOLIA = '0x036CbD53842c5426634e7929541eC2318f3dCF7e' as const
+const USDC_SEPOLIA  = '0x036CbD53842c5426634e7929541eC2318f3dCF7e' as const
 const USDC_DECIMALS = 6
-const DEPOSIT_POLL_MS = 60_000  // 每分钟扫一次
+const DEPOSIT_POLL_MS = 60_000
+
+const USDC_ABI = parseAbi([
+  'function transfer(address to, uint256 value) returns (bool)',
+  'function balanceOf(address) view returns (uint256)',
+])
 
 const transferEvent = parseAbiItem(
   'event Transfer(address indexed from, address indexed to, uint256 value)'
 )
 
 const rpcUrl = process.env.BASE_RPC_URL ?? 'https://sepolia.base.org'
+
 const publicClient = createPublicClient({
   chain: baseSepolia,
   transport: http(rpcUrl),
 })
 
+// ─── 热钱包（归集 + 提现出账）────────────────────────────────────
+
+const HOT_WALLET_PRIV = derivePrivKey('platform-hot-wallet')
+const HOT_WALLET_ADDR = privateKeyToAddress(HOT_WALLET_PRIV)
+
+const hotWalletClient = createWalletClient({
+  account: privateKeyToAccount(HOT_WALLET_PRIV),
+  chain: baseSepolia,
+  transport: http(rpcUrl),
+})
+
+// ─── 归集：充值地址 → 热钱包 ────────────────────────────────────
+
+async function sweepToHotWallet(userId: string, depositAddress: string) {
+  // 检查链上 USDC 余额
+  const onChain = await publicClient.readContract({
+    address: USDC_SEPOLIA, abi: USDC_ABI,
+    functionName: 'balanceOf',
+    args: [depositAddress as `0x${string}`],
+  }) as bigint
+  if (onChain === 0n) return
+
+  // 热钱包先打一点 ETH 给充值地址支付 Gas
+  const ethHash = await hotWalletClient.sendTransaction({
+    to: depositAddress as `0x${string}`,
+    value: parseEther('0.0005'),
+  })
+  await publicClient.waitForTransactionReceipt({ hash: ethHash })
+
+  // 充值地址把 USDC 转给热钱包
+  const depClient = createWalletClient({
+    account: privateKeyToAccount(derivePrivKey(userId)),
+    chain: baseSepolia,
+    transport: http(rpcUrl),
+  })
+  const usdcHash = await depClient.writeContract({
+    address: USDC_SEPOLIA, abi: USDC_ABI,
+    functionName: 'transfer',
+    args: [HOT_WALLET_ADDR, onChain],
+  })
+  await publicClient.waitForTransactionReceipt({ hash: usdcHash })
+
+  db.prepare('UPDATE deposit_txns SET swept = 1 WHERE user_id = ? AND swept = 0').run(userId)
+  console.log(`🔄 归集：${Number(onChain) / 1e6} USDC → 热钱包 (${usdcHash.slice(0, 10)}...)`)
+}
+
+// ─── 提现执行：热钱包 → 用户地址 ────────────────────────────────
+
+async function executeWithdrawal(requestId: string): Promise<{ success: boolean; error?: string; txHash?: string }> {
+  const req = db.prepare("SELECT * FROM withdrawal_requests WHERE id = ? AND status = 'pending'")
+    .get(requestId) as Record<string, unknown> | undefined
+  if (!req) return { success: false, error: '申请不存在或已处理' }
+
+  const amountRaw = BigInt(Math.round((req.amount as number) * 10 ** USDC_DECIMALS))
+
+  const hotBalance = await publicClient.readContract({
+    address: USDC_SEPOLIA, abi: USDC_ABI,
+    functionName: 'balanceOf', args: [HOT_WALLET_ADDR],
+  }) as bigint
+
+  if (hotBalance < amountRaw) {
+    return { success: false, error: `热钱包余额不足（需 ${req.amount} USDC，现有 ${Number(hotBalance) / 1e6} USDC）` }
+  }
+
+  const txHash = await hotWalletClient.writeContract({
+    address: USDC_SEPOLIA, abi: USDC_ABI,
+    functionName: 'transfer',
+    args: [req.to_address as `0x${string}`, amountRaw],
+  })
+  await publicClient.waitForTransactionReceipt({ hash: txHash })
+
+  db.prepare("UPDATE withdrawal_requests SET status='processed', tx_hash=?, processed_at=datetime('now') WHERE id=?")
+    .run(txHash, requestId)
+  console.log(`💸 提现完成：${req.amount} USDC → ${(req.to_address as string).slice(0, 10)}... (${txHash.slice(0, 10)}...)`)
+  return { success: true, txHash }
+}
+
+// ─── 充值监听 ─────────────────────────────────────────────────
+
 async function checkDeposits() {
-  // 取所有平台充值地址
   const rows = db.prepare(
     'SELECT user_id, deposit_address FROM wallets WHERE deposit_address IS NOT NULL'
   ).all() as { user_id: string; deposit_address: string }[]
@@ -1118,14 +1250,11 @@ async function checkDeposits() {
 
   const addrToUser = new Map(rows.map(r => [r.deposit_address.toLowerCase(), r.user_id]))
 
-  // 确定扫描范围
   const latestBlock = await publicClient.getBlockNumber()
   const savedRow = db.prepare("SELECT value FROM system_state WHERE key = 'last_deposit_block'").get() as { value: string } | undefined
   const fromBlock = savedRow ? BigInt(savedRow.value) + 1n : latestBlock - 50n
-
   if (fromBlock > latestBlock) return
 
-  // 拉取 USDC Transfer 事件（to = 平台地址）
   const logs = await publicClient.getLogs({
     address: USDC_SEPOLIA,
     event: transferEvent,
@@ -1135,30 +1264,27 @@ async function checkDeposits() {
   })
 
   for (const log of logs as (Log & { args: { to: string; value: bigint }; transactionHash: string; blockNumber: bigint })[]) {
-    const txHash = log.transactionHash
-    const toAddr = log.args.to?.toLowerCase()
-    const userId = addrToUser.get(toAddr)
+    const txHash  = log.transactionHash
+    const toAddr  = log.args.to?.toLowerCase()
+    const userId  = addrToUser.get(toAddr)
     if (!userId) continue
 
-    // 去重
-    const already = db.prepare('SELECT 1 FROM deposit_txns WHERE tx_hash = ?').get(txHash)
-    if (already) continue
+    if (db.prepare('SELECT 1 FROM deposit_txns WHERE tx_hash = ?').get(txHash)) continue
 
     const amount = Number(log.args.value) / 10 ** USDC_DECIMALS
-
-    // 写入充值记录
     db.prepare('INSERT INTO deposit_txns (tx_hash, user_id, amount, block_number) VALUES (?,?,?,?)')
       .run(txHash, userId, amount, Number(log.blockNumber))
-
-    // 更新余额
     db.prepare('UPDATE wallets SET balance = balance + ? WHERE user_id = ?').run(amount, userId)
 
-    // 站内通知
-    const userName = (db.prepare('SELECT name FROM users WHERE id = ?').get(userId) as { name: string } | undefined)?.name ?? userId
-    console.log(`💰 充值到账：${userName} +${amount} WAZ  (${txHash.slice(0, 10)}...)`)
+    const name = (db.prepare('SELECT name FROM users WHERE id = ?').get(userId) as { name: string } | undefined)?.name ?? userId
+    console.log(`💰 充值到账：${name} +${amount} WAZ  (${txHash.slice(0, 10)}...)`)
+
+    // 异步归集，不阻塞充值到账
+    sweepToHotWallet(userId, toAddr!).catch(e =>
+      console.error(`归集失败 (${userId}):`, e.message)
+    )
   }
 
-  // 更新最后扫描块
   db.prepare("INSERT OR REPLACE INTO system_state (key, value) VALUES ('last_deposit_block', ?)")
     .run(latestBlock.toString())
 }
@@ -1169,6 +1295,7 @@ function startDepositWatcher() {
     checkDeposits().catch(e => console.error('充值扫描出错：', e.message))
   }, DEPOSIT_POLL_MS)
   console.log(`⛓  充值监听已启动（Base Sepolia，每 ${DEPOSIT_POLL_MS / 1000}s 扫描）`)
+  console.log(`🏦 热钱包地址：${HOT_WALLET_ADDR}`)
 }
 
 // ─── 启动 ─────────────────────────────────────────────────────

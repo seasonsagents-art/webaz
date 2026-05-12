@@ -10,6 +10,12 @@ const state = {
   sse: null,
 }
 
+function toggleLang() {
+  setLang(window._lang === 'zh' ? 'en' : 'zh')
+  document.getElementById('html-root')?.setAttribute('lang', window._lang === 'en' ? 'en' : 'zh-CN')
+  route()
+}
+
 // ─── API ─────────────────────────────────────────────────────
 
 async function api(method, path, body) {
@@ -85,20 +91,20 @@ async function render(page, params) {
 
 function statusBadge(status) {
   const map = {
-    created:          ['gray',   '待付款'],
-    paid:             ['blue',   '待接单'],
-    accepted:         ['yellow', '待发货'],
-    shipped:          ['yellow', '已发货'],
-    picked_up:        ['yellow', '已揽收'],
-    in_transit:       ['yellow', '运输中'],
-    delivered:        ['blue',   '待确认'],
-    confirmed:        ['green',  '已确认'],
-    completed:        ['green',  '已完成'],
-    disputed:         ['red',    '争议中'],
-    cancelled:        ['gray',   '已取消'],
-    fault_seller:     ['red',    '卖家违约'],
-    fault_buyer:      ['red',    '买家违约'],
-    fault_logistics:  ['red',    '物流违约'],
+    created:          ['gray',   t('待付款')],
+    paid:             ['blue',   t('待接单')],
+    accepted:         ['yellow', t('待发货')],
+    shipped:          ['yellow', t('已发货')],
+    picked_up:        ['yellow', t('已揽收')],
+    in_transit:       ['yellow', t('运输中')],
+    delivered:        ['blue',   t('待确认')],
+    confirmed:        ['green',  t('已确认')],
+    completed:        ['green',  t('已完成')],
+    disputed:         ['red',    t('争议中')],
+    cancelled:        ['gray',   t('已取消')],
+    fault_seller:     ['red',    t('卖家违约')],
+    fault_buyer:      ['red',    t('买家违约')],
+    fault_logistics:  ['red',    t('物流违约')],
   }
   const [color, label] = map[status] || ['gray', status]
   return `<span class="badge badge-${color}">${label}</span>`
@@ -106,7 +112,8 @@ function statusBadge(status) {
 
 function fmtTime(iso) {
   if (!iso) return ''
-  return new Date(iso).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const locale = window._lang === 'en' ? 'en-US' : 'zh-CN'
+  return new Date(iso).toLocaleString(locale, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
 function alert$(type, msg) {
@@ -114,7 +121,7 @@ function alert$(type, msg) {
 }
 
 function loading$() {
-  return `<div class="loading"><span class="spinner"></span>加载中...</div>`
+  return `<div class="loading"><span class="spinner"></span>${t('加载中...')}</div>`
 }
 
 // 角色首页
@@ -129,47 +136,48 @@ function shell(content, activeTab) {
 
   if (role === 'logistics') {
     tabs = [
-      { id: 'seller',        icon: '🚚', label: '配送任务' },
-      { id: 'orders',        icon: '📋', label: '历史记录' },
-      { id: 'notifications', icon: '🔔', label: '通知', badge: true },
-      { id: 'wallet',        icon: '💰', label: '钱包' },
+      { id: 'seller',        icon: '🚚', label: t('配送任务') },
+      { id: 'orders',        icon: '📋', label: t('历史记录') },
+      { id: 'notifications', icon: '🔔', label: t('通知'), badge: true },
+      { id: 'wallet',        icon: '💰', label: t('钱包') },
     ]
   } else if (role === 'arbitrator') {
     tabs = [
-      { id: 'seller',        icon: '⚖️', label: '仲裁台' },
-      { id: 'orders',        icon: '📋', label: '记录' },
-      { id: 'notifications', icon: '🔔', label: '通知', badge: true },
-      { id: 'wallet',        icon: '💰', label: '钱包' },
+      { id: 'seller',        icon: '⚖️', label: t('仲裁台') },
+      { id: 'orders',        icon: '📋', label: t('记录') },
+      { id: 'notifications', icon: '🔔', label: t('通知'), badge: true },
+      { id: 'wallet',        icon: '💰', label: t('钱包') },
     ]
   } else {
     tabs = [
-      { id: 'shop',          icon: '🛍️', label: '商店' },
-      { id: 'orders',        icon: '📦', label: '订单' },
-      { id: 'seller',        icon: '🏪', label: role === 'seller' ? '卖家' : '后台' },
-      { id: 'notifications', icon: '🔔', label: '通知', badge: true },
-      { id: 'wallet',        icon: '💰', label: '钱包' },
+      { id: 'shop',          icon: '🛍️', label: t('商店') },
+      { id: 'orders',        icon: '📦', label: t('订单') },
+      { id: 'seller',        icon: '🏪', label: role === 'seller' ? t('卖家') : t('后台') },
+      { id: 'notifications', icon: '🔔', label: t('通知'), badge: true },
+      { id: 'wallet',        icon: '💰', label: t('钱包') },
     ]
   }
   return `
     <nav class="navbar">
       <a class="navbar-brand" href="#shop">🦞 WebAZ</a>
       <div class="navbar-actions">
+        <button onclick="toggleLang()" style="background:none;border:1px solid #e5e7eb;cursor:pointer;padding:3px 8px;border-radius:6px;font-size:12px;color:#6b7280;margin-right:4px">${window._lang === 'en' ? '中文' : 'EN'}</button>
         ${state.user
-          ? `<button onclick="navigate('#profile')" style="background:none;border:none;cursor:pointer;display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:8px;color:#374151" title="个人资料 & 设置">
+          ? `<button onclick="navigate('#profile')" style="background:none;border:none;cursor:pointer;display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:8px;color:#374151" title="${t('个人资料 & 设置')}">
                <span style="font-size:13px;color:#6b7280">${state.user.name}</span>
                <span style="font-size:18px">👤</span>
              </button>`
-          : `<button class="btn btn-primary btn-sm" onclick="navigate('#login')">登录</button>`}
+          : `<button class="btn btn-primary btn-sm" onclick="navigate('#login')">${t('登录')}</button>`}
       </div>
     </nav>
     <main class="main">${content}</main>
     <nav class="tabbar">
-      ${tabs.map(t => `
-        <button class="tab-item ${activeTab === t.id ? 'active' : ''}" onclick="navigate('#${t.id}')">
+      ${tabs.map(tb => `
+        <button class="tab-item ${activeTab === tb.id ? 'active' : ''}" onclick="navigate('#${tb.id}')">
           <span class="tab-icon" style="position:relative">
-            ${t.icon}
-            ${t.badge ? `<span id="notif-badge" style="position:absolute;top:-4px;right:-6px;background:#dc2626;color:#fff;border-radius:99px;font-size:10px;padding:0 4px;min-width:16px;text-align:center;display:${state.unread > 0 ? 'inline' : 'none'}">${state.unread || ''}</span>` : ''}
-          </span>${t.label}
+            ${tb.icon}
+            ${tb.badge ? `<span id="notif-badge" style="position:absolute;top:-4px;right:-6px;background:#dc2626;color:#fff;border-radius:99px;font-size:10px;padding:0 4px;min-width:16px;text-align:center;display:${state.unread > 0 ? 'inline' : 'none'}">${state.unread || ''}</span>` : ''}
+          </span>${tb.label}
         </button>`).join('')}
     </nav>`
 }
@@ -183,28 +191,28 @@ async function renderProfile(app) {
 
   const roles = data.roles || [data.role]
   const allRoles = ['buyer', 'seller', 'logistics', 'arbitrator']
-  const roleLabels = { buyer: '买家', seller: '卖家', logistics: '物流', arbitrator: '仲裁员' }
+  const roleLabels = { buyer: t('买家'), seller: t('卖家'), logistics: t('物流'), arbitrator: t('仲裁员') }
   const roleIcons  = { buyer: '🛍️', seller: '🏪', logistics: '🚚', arbitrator: '⚖️' }
   const addable = allRoles.filter(r => !roles.includes(r))
 
   app.innerHTML = shell(`
-    <div class="page-header"><h2>👤 个人资料 & 设置</h2></div>
+    <div class="page-header"><h2>${t('👤 个人资料 & 设置')}</h2></div>
     <div id="profile-msg"></div>
 
     <!-- 基本信息 -->
     <div class="card" style="margin-bottom:16px">
       <div class="card-body">
-        <div style="font-size:13px;color:#6b7280;margin-bottom:4px">昵称</div>
+        <div style="font-size:13px;color:#6b7280;margin-bottom:4px">${t('昵称')}</div>
         <div style="font-size:18px;font-weight:600;margin-bottom:16px">${data.name}</div>
 
-        <div style="font-size:13px;color:#6b7280;margin-bottom:6px">API Key <span style="color:#9ca3af">（你的唯一身份凭证，请妥善保管）</span></div>
+        <div style="font-size:13px;color:#6b7280;margin-bottom:6px">API Key <span style="color:#9ca3af">${t('（你的唯一身份凭证，请妥善保管）')}</span></div>
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
           <code id="apikey-display" style="background:#f3f4f6;padding:6px 10px;border-radius:6px;font-size:13px;flex:1;word-break:break-all;filter:blur(4px);user-select:none">${data.api_key}</code>
-          <button class="btn btn-outline btn-sm" onclick="toggleApiKey()" id="btn-reveal" style="white-space:nowrap">显示</button>
-          <button class="btn btn-outline btn-sm" onclick="copyApiKey('${data.api_key}')" style="white-space:nowrap">复制</button>
+          <button class="btn btn-outline btn-sm" onclick="toggleApiKey()" id="btn-reveal" style="white-space:nowrap">${t('显示')}</button>
+          <button class="btn btn-outline btn-sm" onclick="copyApiKey('${data.api_key}')" style="white-space:nowrap">${t('复制')}</button>
         </div>
 
-        <div style="font-size:13px;color:#6b7280;margin-bottom:6px">钱包余额</div>
+        <div style="font-size:13px;color:#6b7280;margin-bottom:6px">${t('钱包余额')}</div>
         <div style="font-size:16px;font-weight:600;color:#059669">${data.wallet?.balance?.toFixed(2) ?? '—'} WAZ</div>
       </div>
     </div>
@@ -212,23 +220,23 @@ async function renderProfile(app) {
     <!-- 角色管理 -->
     <div class="card" style="margin-bottom:16px">
       <div class="card-body">
-        <div style="font-size:15px;font-weight:600;margin-bottom:12px">角色管理</div>
+        <div style="font-size:15px;font-weight:600;margin-bottom:12px">${t('角色管理')}</div>
 
-        <div style="font-size:13px;color:#6b7280;margin-bottom:8px">已有角色</div>
+        <div style="font-size:13px;color:#6b7280;margin-bottom:8px">${t('已有角色')}</div>
         <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px">
           ${roles.map(r => `
             <button onclick="switchRole('${r}')" style="
               display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:10px;font-size:14px;cursor:pointer;border:2px solid;
               ${r === data.role ? 'background:#eff6ff;border-color:#3b82f6;color:#1d4ed8;font-weight:600' : 'background:#f9fafb;border-color:#e5e7eb;color:#374151'}
-            " title="${r === data.role ? '当前激活' : '点击切换'}">
+            " title="${r === data.role ? t('当前激活') : '点击切换'}">
               ${roleIcons[r]} ${roleLabels[r]}
-              ${r === data.role ? '<span style="font-size:11px;color:#3b82f6">● 激活</span>' : ''}
+              ${r === data.role ? `<span style="font-size:11px;color:#3b82f6">${t('● 激活')}</span>` : ''}
             </button>
           `).join('')}
         </div>
 
         ${addable.length > 0 ? `
-          <div style="font-size:13px;color:#6b7280;margin-bottom:8px">添加新角色</div>
+          <div style="font-size:13px;color:#6b7280;margin-bottom:8px">${t('添加新角色')}</div>
           <div style="display:flex;flex-wrap:wrap;gap:8px">
             ${addable.map(r => `
               <button onclick="addRole('${r}')" style="
@@ -237,18 +245,18 @@ async function renderProfile(app) {
               ">${roleIcons[r]} + ${roleLabels[r]}</button>
             `).join('')}
           </div>
-        ` : '<div style="font-size:13px;color:#6b7280">已拥有全部角色</div>'}
+        ` : `<div style="font-size:13px;color:#6b7280">${t('已拥有全部角色')}</div>`}
       </div>
     </div>
 
     <!-- 找回密钥 -->
     <div class="card" style="margin-bottom:16px">
       <div class="card-body">
-        <div style="font-size:15px;font-weight:600;margin-bottom:12px">找回密钥</div>
-        <p style="font-size:13px;color:#6b7280;margin-bottom:12px">如果你遗失了 API Key，可以通过注册名称找回。</p>
+        <div style="font-size:15px;font-weight:600;margin-bottom:12px">${t('找回密钥')}</div>
+        <p style="font-size:13px;color:#6b7280;margin-bottom:12px">${t('如果你遗失了 API Key，可以通过注册名称找回。')}</p>
         <div style="display:flex;gap:8px">
-          <input class="form-control" id="recover-name" placeholder="输入注册时的名称" style="flex:1">
-          <button class="btn btn-outline" onclick="recoverKey()">找回</button>
+          <input class="form-control" id="recover-name" placeholder="${t('输入注册时的名称')}" style="flex:1">
+          <button class="btn btn-outline" onclick="recoverKey()">${t('找回')}</button>
         </div>
         <div id="recover-result" style="margin-top:10px"></div>
       </div>
@@ -257,7 +265,7 @@ async function renderProfile(app) {
     <!-- 退出 -->
     <div class="card">
       <div class="card-body">
-        <button class="btn btn-outline btn-sm" onclick="logout()" style="color:#dc2626;border-color:#dc2626">退出登录</button>
+        <button class="btn btn-outline btn-sm" onclick="logout()" style="color:#dc2626;border-color:#dc2626">${t('退出登录')}</button>
       </div>
     </div>
   `, 'profile')
@@ -269,13 +277,13 @@ function toggleApiKey() {
   const el = document.getElementById('apikey-display')
   const btn = document.getElementById('btn-reveal')
   if (el) el.style.filter = apiKeyVisible ? 'none' : 'blur(4px)'
-  if (btn) btn.textContent = apiKeyVisible ? '隐藏' : '显示'
+  if (btn) btn.textContent = apiKeyVisible ? t('隐藏') : t('显示')
 }
 
 function copyApiKey(key) {
   navigator.clipboard.writeText(key).then(() => {
     const msgEl = document.getElementById('profile-msg')
-    if (msgEl) { msgEl.innerHTML = alert$('success', 'API Key 已复制到剪贴板'); setTimeout(() => msgEl.innerHTML = '', 2000) }
+    if (msgEl) { msgEl.innerHTML = alert$('success', t('API Key 已复制到剪贴板')); setTimeout(() => msgEl.innerHTML = '', 2000) }
   })
 }
 
@@ -305,7 +313,7 @@ async function recoverKey() {
       <div style="font-size:13px;font-weight:600">${a.name} · ${a.role}</div>
       <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
         <code style="font-size:12px;color:#6b7280;filter:blur(3px);cursor:pointer" onclick="this.style.filter='none'">${a.api_key}</code>
-        <button class="btn btn-outline btn-sm" onclick="useKey('${a.api_key}')">使用此账号</button>
+        <button class="btn btn-outline btn-sm" onclick="useKey('${a.api_key}')">${t('使用此账号')}</button>
       </div>
     </div>
   `).join('')
@@ -333,37 +341,40 @@ function renderLogin() {
     <div class="login-wrap">
       <div class="login-logo">🦞</div>
       <h1 class="login-title">WebAZ</h1>
-      <p class="login-sub">去中心化商业协议 · AI Agent 原生</p>
+      <p class="login-sub">${t('去中心化商业协议 · AI Agent 原生')}</p>
+      <div style="text-align:center;margin-bottom:16px">
+        <button onclick="toggleLang()" style="background:none;border:1px solid #e5e7eb;cursor:pointer;padding:4px 12px;border-radius:6px;font-size:13px;color:#6b7280">${window._lang === 'en' ? '中文' : 'EN'}</button>
+      </div>
       <div id="login-msg"></div>
 
       <div class="seg-ctrl" style="margin-bottom:24px">
-        <button class="seg-btn active" id="tab-login" onclick="switchLoginTab('login')">我已有账号</button>
-        <button class="seg-btn" id="tab-reg" onclick="switchLoginTab('reg')">注册新账号</button>
+        <button class="seg-btn active" id="tab-login" onclick="switchLoginTab('login')">${t('我已有账号')}</button>
+        <button class="seg-btn" id="tab-reg" onclick="switchLoginTab('reg')">${t('注册新账号')}</button>
       </div>
 
       <div id="panel-login">
         <div class="form-group">
-          <label class="form-label">粘贴你的 api_key</label>
+          <label class="form-label">${t('粘贴你的 api_key')}</label>
           <input class="form-control" id="inp-key" placeholder="key_xxxx..." style="font-family:monospace;font-size:13px">
         </div>
-        <button class="btn btn-primary" onclick="doLogin()">登录</button>
+        <button class="btn btn-primary" onclick="doLogin()">${t('登录')}</button>
       </div>
 
       <div id="panel-reg" style="display:none">
         <div class="form-group">
-          <label class="form-label">名称 / 店铺名</label>
-          <input class="form-control" id="inp-name" placeholder="例：陈小明 / 竹韵手工坊">
+          <label class="form-label">${t('名称 / 店铺名')}</label>
+          <input class="form-control" id="inp-name" placeholder="${t('例：陈小明 / 竹韵手工坊')}">
         </div>
         <div class="form-group">
-          <label class="form-label">角色</label>
+          <label class="form-label">${t('角色')}</label>
           <select class="form-control" id="inp-role">
-            <option value="buyer">买家 — 浏览购物</option>
-            <option value="seller">卖家 — 上架商品</option>
-            <option value="logistics">物流 — 揽收投递</option>
-            <option value="arbitrator">仲裁员 — 处理争议</option>
+            <option value="buyer">${t('买家 — 浏览购物')}</option>
+            <option value="seller">${t('卖家 — 上架商品')}</option>
+            <option value="logistics">${t('物流 — 揽收投递')}</option>
+            <option value="arbitrator">${t('仲裁员 — 处理争议')}</option>
           </select>
         </div>
-        <button class="btn btn-primary" onclick="doRegister()">注册</button>
+        <button class="btn btn-primary" onclick="doRegister()">${t('注册')}</button>
       </div>
     </div>`
 }
@@ -377,10 +388,10 @@ window.switchLoginTab = (tab) => {
 
 window.doLogin = async () => {
   const key = document.getElementById('inp-key').value.trim()
-  if (!key) return showMsg('error', '请粘贴 api_key')
+  if (!key) return showMsg('error', t('请粘贴 api_key'))
   state.apiKey = key
   const user = await GET('/me')
-  if (user.error) { state.apiKey = null; return showMsg('error', '无效的 api_key，请重新输入') }
+  if (user.error) { state.apiKey = null; return showMsg('error', t('无效的 api_key，请重新输入')) }
   state.user = user
   localStorage.setItem('webaz_key', key)
   navigate(roleHome(user.role))
@@ -389,11 +400,10 @@ window.doLogin = async () => {
 window.doRegister = async () => {
   const name = document.getElementById('inp-name').value.trim()
   const role = document.getElementById('inp-role').value
-  if (!name) return showMsg('error', '请填写名称')
+  if (!name) return showMsg('error', t('请填写名称'))
   const res = await POST('/register', { name, role })
   if (res.error) return showMsg('error', res.error)
-  // 注册成功：显示 api_key 并自动登录
-  showMsg('success', `注册成功！<br>你的 api_key（请妥善保存，这是你的登录凭证）：<br><code style="font-size:12px;word-break:break-all">${res.api_key}</code>`)
+  showMsg('success', `${t('注册成功！')}<br>${t('你的 api_key（请妥善保存，这是你的登录凭证）：')}<br><code style="font-size:12px;word-break:break-all">${res.api_key}</code>`)
   state.apiKey = res.api_key
   state.user = { ...res }
   localStorage.setItem('webaz_key', res.api_key)
@@ -412,7 +422,7 @@ async function renderShop(app) {
   const products = await GET('/products')
 
   const grid = products.length === 0
-    ? `<div class="empty"><div class="empty-icon">🛍️</div><div class="empty-text">暂无商品</div></div>`
+    ? `<div class="empty"><div class="empty-icon">🛍️</div><div class="empty-text">${t('暂无商品')}</div></div>`
     : `<div class="product-grid">
         ${products.map(p => `
           <div class="product-card" onclick="navigate('#order-product/${p.id}')">
@@ -426,13 +436,13 @@ async function renderShop(app) {
        </div>`
 
   app.innerHTML = shell(`
-    <h1 class="page-title">发现好物</h1>
+    <h1 class="page-title">${t('发现好物')}</h1>
     <div class="search-bar">
-      <input class="search-input" id="search-inp" placeholder="搜索商品..." onkeydown="if(event.key==='Enter')doSearch()">
-      <button class="btn btn-primary btn-sm" style="width:auto;padding:10px 16px" onclick="doSearch()">搜</button>
+      <input class="search-input" id="search-inp" placeholder="${t('搜索商品...')}" onkeydown="if(event.key==='Enter')doSearch()">
+      <button class="btn btn-primary btn-sm" style="width:auto;padding:10px 16px" onclick="doSearch()">${t('搜')}</button>
     </div>
     <div style="margin-bottom:16px">
-      <button class="btn btn-outline btn-sm" style="width:auto" onclick="navigate('#skills')">⚡ Skill 市场</button>
+      <button class="btn btn-outline btn-sm" style="width:auto" onclick="navigate('#skills')">${t('⚡ Skill 市场')}</button>
     </div>
     <div id="product-list">${grid}</div>
   `, 'shop')
@@ -443,7 +453,7 @@ window.doSearch = async () => {
   document.getElementById('product-list').innerHTML = loading$()
   const products = await GET(`/products?q=${encodeURIComponent(q)}`)
   const grid = products.length === 0
-    ? `<div class="empty"><div class="empty-icon">🔍</div><div class="empty-text">没有找到"${q}"</div></div>`
+    ? `<div class="empty"><div class="empty-icon">🔍</div><div class="empty-text">${t('没有找到"')}${q}"</div></div>`
     : `<div class="product-grid">
         ${products.map(p => `
           <div class="product-card" onclick="navigate('#order-product/${p.id}')">
@@ -483,42 +493,42 @@ async function renderBuyPage(app, productId) {
   app.innerHTML = shell(loading$(), 'shop')
   const products = await GET('/products')
   const p = products.find(x => x.id === productId)
-  if (!p) return app.innerHTML = shell(`<div class="empty">商品不存在</div>`, 'shop')
+  if (!p) return app.innerHTML = shell(`<div class="empty">${t('商品不存在')}</div>`, 'shop')
 
   app.innerHTML = shell(`
-    <button class="btn btn-gray btn-sm" style="width:auto;margin-bottom:16px" onclick="history.back()">← 返回</button>
+    <button class="btn btn-gray btn-sm" style="width:auto;margin-bottom:16px" onclick="history.back()">${t('← 返回')}</button>
     <div class="card">
       <div style="font-size:60px;text-align:center;padding:20px 0">${getCategoryIcon(p.category)}</div>
       <h2 style="font-size:18px;font-weight:700;margin-bottom:6px">${p.title}</h2>
       <p style="font-size:14px;color:#6b7280;margin-bottom:12px">${p.description}</p>
-      <div class="detail-row"><span class="detail-label">价格</span><span class="detail-value" style="color:#4f46e5;font-size:18px">${p.price} WAZ</span></div>
-      <div class="detail-row"><span class="detail-label">库存</span><span class="detail-value">${p.stock} 件</span></div>
-      <div class="detail-row"><span class="detail-label">卖家</span><span class="detail-value">${p.seller_name}</span></div>
+      <div class="detail-row"><span class="detail-label">${t('价格')}</span><span class="detail-value" style="color:#4f46e5;font-size:18px">${p.price} WAZ</span></div>
+      <div class="detail-row"><span class="detail-label">${t('库存')}</span><span class="detail-value">${p.stock} ${t('件')}</span></div>
+      <div class="detail-row"><span class="detail-label">${t('卖家')}</span><span class="detail-value">${p.seller_name}</span></div>
     </div>
     <div id="buy-msg"></div>
     ${state.user?.role === 'buyer' ? `
     <div class="card">
       <div class="form-group">
-        <label class="form-label">收货地址</label>
-        <input class="form-control" id="inp-addr" placeholder="省市区 详细地址">
+        <label class="form-label">${t('收货地址')}</label>
+        <input class="form-control" id="inp-addr" placeholder="${t('省市区 详细地址')}">
       </div>
       <div class="form-group">
-        <label class="form-label">备注（可选）</label>
-        <input class="form-control" id="inp-notes" placeholder="给卖家的留言">
+        <label class="form-label">${t('备注（可选）')}</label>
+        <input class="form-control" id="inp-notes" placeholder="${t('给卖家的留言')}">
       </div>
-      <button class="btn btn-primary" onclick="doBuy('${p.id}', ${p.price})">立即下单 · ${p.price} WAZ</button>
+      <button class="btn btn-primary" onclick="doBuy('${p.id}', ${p.price})">${t('立即下单')} · ${p.price} WAZ</button>
     </div>` : `
-    <div class="alert alert-info">${state.user ? '只有买家账号可以下单' : '<a href="#login" style="color:inherit;font-weight:700">登录</a>后下单'}</div>`}
+    <div class="alert alert-info">${state.user ? t('只有买家账号可以下单') : `<a href="#login" style="color:inherit;font-weight:700">${t('登录')}</a>${t('后下单')}`}</div>`}
   `, 'shop')
 }
 
 window.doBuy = async (productId, price) => {
   const addr = document.getElementById('inp-addr').value.trim()
   const notes = document.getElementById('inp-notes').value.trim()
-  if (!addr) { document.getElementById('buy-msg').innerHTML = alert$('error', '请填写收货地址'); return }
+  if (!addr) { document.getElementById('buy-msg').innerHTML = alert$('error', t('请填写收货地址')); return }
   const res = await POST('/orders', { product_id: productId, shipping_address: addr, notes })
   if (res.error) { document.getElementById('buy-msg').innerHTML = alert$('error', res.error); return }
-  document.getElementById('buy-msg').innerHTML = alert$('success', `下单成功！${price} WAZ 已托管，等待卖家接单`)
+  document.getElementById('buy-msg').innerHTML = alert$('success', `${t('下单成功！')}${price} WAZ ${t('已托管，等待卖家接单')}`)
   setTimeout(() => navigate(`#order/${res.order_id}`), 1500)
 }
 
@@ -530,21 +540,21 @@ async function renderOrders(app) {
   const orders = await GET('/orders')
 
   const list = orders.length === 0
-    ? `<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">暂无订单</div></div>`
+    ? `<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">${t('暂无订单')}</div></div>`
     : orders.map(o => `
       <div class="card" onclick="navigate('#order/${o.id}')" style="cursor:pointer">
         <div class="order-item">
           <div class="order-icon">${getCategoryIcon(o.category)}</div>
           <div class="order-info">
             <div class="order-title">${o.product_title}</div>
-            <div class="order-meta">${fmtTime(o.created_at)} · ${o.buyer_id === state.user.id ? '我买的' : '我卖的'}</div>
+            <div class="order-meta">${fmtTime(o.created_at)} · ${o.buyer_id === state.user.id ? t('我买的') : t('我卖的')}</div>
             <div style="margin-top:6px">${statusBadge(o.status)}</div>
           </div>
           <div class="order-amount">${o.total_amount}</div>
         </div>
       </div>`).join('')
 
-  app.innerHTML = shell(`<h1 class="page-title">我的订单</h1>${list}`, 'orders')
+  app.innerHTML = shell(`<h1 class="page-title">${t('我的订单')}</h1>${list}`, 'orders')
 }
 
 // ─── 订单详情页 ───────────────────────────────────────────────
@@ -598,7 +608,7 @@ async function renderOrderDetail(app, orderId) {
   const trackingStepIcons = { shipped:'📦', picked_up:'✅', in_transit:'🚛', delivered:'📬' }
   const trackingHtml = (data.trackingInfo || []).length > 0 ? `
     <div class="card">
-      <div class="action-title">🚚 物流跟踪</div>
+      <div class="action-title">🚚 ${t('物流跟踪')}</div>
       ${(data.trackingInfo || []).map(t => `
         <div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid #f3f4f6">
           <div style="font-size:20px;line-height:1;flex-shrink:0">${trackingStepIcons[t.status] || '•'}</div>
@@ -618,19 +628,19 @@ async function renderOrderDetail(app, orderId) {
   const disputeHtml = dispute ? buildDisputeHtml(dispute, state.user) : ''
 
   app.innerHTML = shell(`
-    <button class="btn btn-gray btn-sm" style="width:auto;margin-bottom:16px" onclick="history.back()">← 返回</button>
+    <button class="btn btn-gray btn-sm" style="width:auto;margin-bottom:16px" onclick="history.back()">${t('← 返回')}</button>
 
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <div style="font-size:13px;color:#6b7280;font-family:monospace">${order.id}</div>
         ${statusBadge(order.status)}
       </div>
-      <div class="detail-row"><span class="detail-label">商品</span><span class="detail-value">${product?.title || ''}</span></div>
-      <div class="detail-row"><span class="detail-label">金额</span><span class="detail-value" style="color:#4f46e5">${order.total_amount} WAZ</span></div>
-      <div class="detail-row"><span class="detail-label">下单时间</span><span class="detail-value">${fmtTime(order.created_at)}</span></div>
-      ${order.shipping_address ? `<div class="detail-row"><span class="detail-label">收货地址</span><span class="detail-value">${order.shipping_address}</span></div>` : ''}
-      ${isOverdue ? `<div class="alert alert-error" style="margin-top:12px">⚠️ 已超时！协议将自动判责</div>` : ''}
-      ${activeDeadline && !isOverdue ? `<div class="alert alert-warning" style="margin-top:12px">截止时间：${fmtTime(activeDeadline.deadline)}</div>` : ''}
+      <div class="detail-row"><span class="detail-label">${t('商品')}</span><span class="detail-value">${product?.title || ''}</span></div>
+      <div class="detail-row"><span class="detail-label">${t('金额')}</span><span class="detail-value" style="color:#4f46e5">${order.total_amount} WAZ</span></div>
+      <div class="detail-row"><span class="detail-label">${t('下单时间')}</span><span class="detail-value">${fmtTime(order.created_at)}</span></div>
+      ${order.shipping_address ? `<div class="detail-row"><span class="detail-label">${t('收货地址')}</span><span class="detail-value">${order.shipping_address}</span></div>` : ''}
+      ${isOverdue ? `<div class="alert alert-error" style="margin-top:12px">⚠️ ${t('已超时！协议将自动判责')}</div>` : ''}
+      ${activeDeadline && !isOverdue ? `<div class="alert alert-warning" style="margin-top:12px">${t('截止时间：')}${fmtTime(activeDeadline.deadline)}</div>` : ''}
     </div>
 
     ${trackingHtml}
@@ -641,8 +651,8 @@ async function renderOrderDetail(app, orderId) {
     </div>
 
     <div class="card">
-      <div class="action-title">完整状态历史</div>
-      <div class="timeline">${historyHtml || '<div style="color:#6b7280;font-size:13px">暂无记录</div>'}</div>
+      <div class="action-title">${t('完整状态历史')}</div>
+      <div class="timeline">${historyHtml || `<div style="color:#6b7280;font-size:13px">${t('暂无记录')}</div>`}</div>
     </div>
   `, 'orders')
 }
@@ -1240,7 +1250,7 @@ async function renderDisputeDetail(app, disputeId) {
   if (dispute.error) { app.innerHTML = shell(alert$('error', dispute.error), 'orders'); return }
 
   app.innerHTML = shell(`
-    <button class="btn btn-gray btn-sm" style="width:auto;margin-bottom:16px" onclick="history.back()">← 返回</button>
+    <button class="btn btn-gray btn-sm" style="width:auto;margin-bottom:16px" onclick="history.back()">${t('← 返回')}</button>
     <h1 class="page-title">争议 #${dispute.id.slice(-6)}</h1>
     ${buildDisputeHtml(dispute, state.user)}
     <div class="card" style="margin-top:12px">
@@ -1267,7 +1277,7 @@ async function renderDisputeList(app) {
   if (disputes.error) { app.innerHTML = shell(alert$('error', disputes.error), 'orders'); return }
 
   const html = disputes.length === 0
-    ? `<div class="empty"><div class="empty-icon">⚖️</div><div class="empty-text">暂无开放争议</div></div>`
+    ? `<div class="empty"><div class="empty-icon">⚖️</div><div class="empty-text">${t('暂无开放争议')}</div></div>`
     : disputes.map(d => `
       <div class="card" onclick="navigate('#dispute/${d.id}')" style="cursor:pointer">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
@@ -1297,7 +1307,7 @@ async function renderLogistics(app) {
   if (!state.user) { renderLogin(); return }
   if (state.user.role !== 'logistics') {
     app.innerHTML = shell(`
-      <h1 class="page-title">物流仪表盘</h1>
+      <h1 class="page-title">${t('物流仪表盘')}</h1>
       <div class="alert alert-info">此功能仅限物流角色使用。<br>你的角色：${state.user.role}</div>
     `, 'seller')
     return
@@ -1324,7 +1334,7 @@ async function renderLogistics(app) {
           ${statusBadge(o.status)}
         </div>
         <div style="font-size:13px;color:#6b7280">
-          买家：${o.buyer_name} · 卖家：${o.seller_name}
+          ${t('买家：')}${o.buyer_name} · ${t('卖家：')}${o.seller_name}
         </div>
         <div style="font-size:12px;color:#9ca3af;margin-top:2px">
           ${o.total_amount} WAZ · ${fmtTime(o.created_at)}
@@ -1350,26 +1360,26 @@ async function renderLogistics(app) {
   }
 
   const availableHtml = available.length === 0
-    ? `<div class="empty" style="padding:16px"><div class="empty-icon">📭</div><div class="empty-text">暂无待揽收订单</div></div>`
+    ? `<div class="empty" style="padding:16px"><div class="empty-icon">📭</div><div class="empty-text">${t('暂无待揽收订单')}</div></div>`
     : available.map(o => orderCard(o, true)).join('')
 
   const mineHtml = mine.length === 0
-    ? `<div class="empty" style="padding:16px"><div class="empty-icon">✅</div><div class="empty-text">暂无进行中订单</div></div>`
+    ? `<div class="empty" style="padding:16px"><div class="empty-icon">✅</div><div class="empty-text">${t('暂无进行中订单')}</div></div>`
     : mine.map(o => orderCard(o, false)).join('')
 
   app.innerHTML = shell(`
-    <h1 class="page-title">🚚 物流仪表盘</h1>
+    <h1 class="page-title">🚚 ${t('物流仪表盘')}</h1>
 
     ${mine.length > 0 ? `<div class="alert alert-warning">📦 你有 ${mine.length} 个订单正在配送</div>` : ''}
 
-    <div style="font-weight:700;margin-bottom:8px">我的配送任务</div>
+    <div style="font-weight:700;margin-bottom:8px">${t('我的配送任务')}</div>
     ${mineHtml}
 
     <div class="divider"></div>
 
-    <div style="font-weight:700;margin-bottom:8px">可接订单（未认领）</div>
+    <div style="font-weight:700;margin-bottom:8px">${t('可接订单（未认领）')}</div>
     <div style="font-size:13px;color:#6b7280;margin-bottom:10px">
-      揽收后即自动认领为你的配送任务
+      ${t('揽收后即自动认领为你的配送任务')}
     </div>
     ${availableHtml}
   `, 'seller')
@@ -1402,7 +1412,7 @@ async function renderSeller(app) {
   if (!state.user) { renderLogin(); return }
   if (state.user.role !== 'seller') {
     app.innerHTML = shell(`
-      <h1 class="page-title">卖家后台</h1>
+      <h1 class="page-title">${t('卖家后台')}</h1>
       <div class="alert alert-info">此功能仅限卖家使用。<br>你的角色：${state.user.role}</div>
     `, 'seller')
     return
@@ -1416,7 +1426,7 @@ async function renderSeller(app) {
   const myProducts = products
 
   const pendingHtml = pendingOrders.length === 0
-    ? `<div class="empty" style="padding:24px"><div class="empty-icon">✅</div><div class="empty-text">暂无待处理订单</div></div>`
+    ? `<div class="empty" style="padding:24px"><div class="empty-icon">✅</div><div class="empty-text">${t('暂无待处理订单')}</div></div>`
     : pendingOrders.map(o => `
       <div class="card" onclick="navigate('#order/${o.id}')" style="cursor:pointer">
         <div class="order-item">
@@ -1431,74 +1441,74 @@ async function renderSeller(app) {
       </div>`).join('')
 
   const productsHtml = myProducts.length === 0
-    ? `<div class="empty" style="padding:24px"><div class="empty-icon">📭</div><div class="empty-text">还没有商品</div></div>`
+    ? `<div class="empty" style="padding:24px"><div class="empty-icon">📭</div><div class="empty-text">${t('还没有商品')}</div></div>`
     : myProducts.map(p => `
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center">
           <div>
             <div style="font-weight:600">${p.title}</div>
-            <div style="font-size:13px;color:#6b7280;margin-top:2px">${p.price} WAZ · 库存 ${p.stock}</div>
+            <div style="font-size:13px;color:#6b7280;margin-top:2px">${p.price} WAZ · ${t('库存')} ${p.stock}</div>
           </div>
-          <span class="badge badge-${p.status === 'active' ? 'green' : 'gray'}">${p.status === 'active' ? '在售' : '已下架'}</span>
+          <span class="badge badge-${p.status === 'active' ? 'green' : 'gray'}">${p.status === 'active' ? t('在售') : t('已下架')}</span>
         </div>
       </div>`).join('')
 
   app.innerHTML = shell(`
-    <h1 class="page-title">卖家后台</h1>
+    <h1 class="page-title">${t('卖家后台')}</h1>
 
     ${pendingOrders.length > 0 ? `<div class="alert alert-warning">📬 你有 ${pendingOrders.length} 个订单需要处理</div>` : ''}
 
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <div style="font-weight:700">待处理订单</div>
+      <div style="font-weight:700">${t('待处理订单')}</div>
     </div>
     ${pendingHtml}
 
     <div class="divider"></div>
 
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <div style="font-weight:700">我的商品</div>
-      <button class="btn btn-primary btn-sm" onclick="showAddProduct()">+ 上架</button>
+      <div style="font-weight:700">${t('我的商品')}</div>
+      <button class="btn btn-primary btn-sm" onclick="showAddProduct()">${t('+ 上架')}</button>
     </div>
     ${productsHtml}
 
     <div id="add-product-form" style="display:none">
       <div class="divider"></div>
       <div class="card">
-        <div style="font-weight:700;margin-bottom:16px">上架新商品</div>
+        <div style="font-weight:700;margin-bottom:16px">${t('上架新商品')}</div>
         <div id="add-msg"></div>
-        <div class="form-group"><label class="form-label">商品名称</label><input class="form-control" id="prd-title" placeholder="例：手工竹编收纳篮"></div>
-        <div class="form-group"><label class="form-label">商品描述</label><textarea class="form-control" id="prd-desc" placeholder="材质、尺寸、特点..."></textarea></div>
-        <div class="form-group"><label class="form-label">价格（WAZ）</label><input class="form-control" id="prd-price" type="number" placeholder="199"></div>
-        <div class="form-group"><label class="form-label">库存数量</label><input class="form-control" id="prd-stock" type="number" value="10"></div>
-        <div class="form-group"><label class="form-label">分类（可选）</label>
+        <div class="form-group"><label class="form-label">${t('商品名称')}</label><input class="form-control" id="prd-title" placeholder="例：手工竹编收纳篮"></div>
+        <div class="form-group"><label class="form-label">${t('商品描述')}</label><textarea class="form-control" id="prd-desc" placeholder="材质、尺寸、特点..."></textarea></div>
+        <div class="form-group"><label class="form-label">${t('价格（WAZ）')}</label><input class="form-control" id="prd-price" type="number" placeholder="199"></div>
+        <div class="form-group"><label class="form-label">${t('库存数量')}</label><input class="form-control" id="prd-stock" type="number" value="10"></div>
+        <div class="form-group"><label class="form-label">${t('分类（可选）')}</label>
           <select class="form-control" id="prd-cat">
-            <option value="">不分类</option>
-            <option value="茶具">茶具</option><option value="家居">家居</option>
-            <option value="食品">食品</option><option value="服装">服装</option>
-            <option value="手工">手工</option><option value="电子">电子</option>
+            <option value="">${t('不分类')}</option>
+            <option value="茶具">${t('茶具')}</option><option value="家居">${t('家居')}</option>
+            <option value="食品">${t('食品')}</option><option value="服装">${t('服装')}</option>
+            <option value="手工">${t('手工')}</option><option value="电子">${t('电子')}</option>
           </select>
         </div>
         <div class="btn-row">
-          <button class="btn btn-gray" onclick="hideAddProduct()">取消</button>
-          <button class="btn btn-primary" onclick="doAddProduct()">上架</button>
+          <button class="btn btn-gray" onclick="hideAddProduct()">${t('取消')}</button>
+          <button class="btn btn-primary" onclick="doAddProduct()">${t('上架')}</button>
         </div>
       </div>
     </div>
 
     <div class="divider"></div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <div style="font-weight:700">⚡ 我的 Skill</div>
-      <button class="btn btn-outline btn-sm" onclick="navigate('#skills')">Skill 市场</button>
+      <div style="font-weight:700">⚡ ${t('我的 Skill')}</div>
+      <button class="btn btn-outline btn-sm" onclick="navigate('#skills')">${t('Skill 市场')}</button>
     </div>
-    <div id="my-skills-list">${mySkills.length > 0 ? mySkills.map(s => skillCard(s, 'seller')).join('') : `<div class="empty" style="padding:24px"><div class="empty-icon">⚡</div><div class="empty-text">还没有 Skill</div></div>`}</div>
-    <button class="btn btn-outline" style="margin-top:12px" onclick="showPublishSkill()">+ 发布新 Skill</button>
+    <div id="my-skills-list">${mySkills.length > 0 ? mySkills.map(s => skillCard(s, 'seller')).join('') : `<div class="empty" style="padding:24px"><div class="empty-icon">⚡</div><div class="empty-text">${t('还没有 Skill')}</div></div>`}</div>
+    <button class="btn btn-outline" style="margin-top:12px" onclick="showPublishSkill()">${t('+ 发布新 Skill')}</button>
 
     <div id="publish-skill-form" style="display:none">
       <div class="divider"></div>
       <div class="card">
-        <div style="font-weight:700;margin-bottom:16px">发布 Skill</div>
+        <div style="font-weight:700;margin-bottom:16px">${t('发布 Skill')}</div>
         <div id="skill-msg"></div>
-        <div class="form-group"><label class="form-label">Skill 类型</label>
+        <div class="form-group"><label class="form-label">${t('Skill 类型')}</label>
           <select class="form-control" id="skl-type" onchange="updateSkillConfigHint()">
             <option value="catalog_sync">🔄 目录同步 — 商品接入 WebAZ 搜索</option>
             <option value="auto_accept">⚡ 自动接单 — 买家下单立即接受</option>
@@ -1507,12 +1517,12 @@ async function renderSeller(app) {
             <option value="instant_ship">🚀 极速发货 — 承诺 24h 发货</option>
           </select>
         </div>
-        <div class="form-group"><label class="form-label">Skill 名称</label><input class="form-control" id="skl-name" placeholder="例：竹韵手工坊自动接单"></div>
-        <div class="form-group"><label class="form-label">描述</label><textarea class="form-control" id="skl-desc" placeholder="简要说明这个 Skill 能给买家带来什么好处"></textarea></div>
+        <div class="form-group"><label class="form-label">${t('Skill 名称')}</label><input class="form-control" id="skl-name" placeholder="例：竹韵手工坊自动接单"></div>
+        <div class="form-group"><label class="form-label">${t('描述')}</label><textarea class="form-control" id="skl-desc" placeholder="简要说明这个 Skill 能给买家带来什么好处"></textarea></div>
         <div id="skl-config-hint" class="alert alert-info" style="font-size:13px;margin-bottom:16px">目录同步：将你的商品列入 WebAZ 搜索优先级，买家订阅后可优先发现你的商品。推荐佣金 0.5% 由协议自动分配。</div>
         <div class="btn-row">
-          <button class="btn btn-gray" onclick="hidePublishSkill()">取消</button>
-          <button class="btn btn-primary" onclick="doPublishSkill()">发布</button>
+          <button class="btn btn-gray" onclick="hidePublishSkill()">${t('取消')}</button>
+          <button class="btn btn-primary" onclick="doPublishSkill()">${t('发布')}</button>
         </div>
       </div>
     </div>
@@ -1554,7 +1564,7 @@ function skillCard(s, context) {
             <div style="font-weight:600">${icon} ${s.name}</div>
             <div style="font-size:12px;color:#6b7280;margin-top:2px">${label} · ${s.subscriber_count || 0} 订阅 · 使用 ${s.total_uses} 次</div>
           </div>
-          <span class="badge badge-green">运行中</span>
+          <span class="badge badge-green">${t('运行中')}</span>
         </div>
         <div style="font-size:13px;color:#6b7280;margin-top:8px">${s.description}</div>
       </div>`
@@ -1569,7 +1579,7 @@ function skillCard(s, context) {
           <div style="font-size:12px;color:#6b7280;margin-top:2px">${label} · @${s.seller_name} · ${s.subscriber_count || 0} 订阅</div>
         </div>
         <button class="btn ${subscribed ? 'btn-gray' : 'btn-primary'} btn-sm" style="flex-shrink:0;margin-left:8px"
-          onclick="toggleSubscribeSkill('${s.id}', ${subscribed})">${subscribed ? '已订阅' : '+ 订阅'}</button>
+          onclick="toggleSubscribeSkill('${s.id}', ${subscribed})">${subscribed ? t('已订阅') : t('+ 订阅')}</button>
       </div>
       <div style="font-size:13px;color:#6b7280;margin-top:8px">${s.description}</div>
     </div>`
@@ -1611,7 +1621,7 @@ async function renderWallet(app) {
   app.innerHTML = shell(loading$(), 'wallet')
   const [wallet, rep] = await Promise.all([GET('/wallet'), GET('/reputation')])
 
-  const LEVEL_LABELS = { new:'新手 🌱', trusted:'可信 ⭐', quality:'优质 🌟', star:'明星 💫', legend:'传奇 🔥' }
+  const LEVEL_LABELS = { new:t('新手 🌱'), trusted:t('可信 ⭐'), quality:t('优质 🌟'), star:t('明星 💫'), legend:t('传奇 🔥') }
   const LEVEL_THRESHOLDS = { new:0, trusted:200, quality:800, star:2000, legend:5000 }
   const levelKeys = ['new','trusted','quality','star','legend']
   const curIdx = levelKeys.indexOf(rep.level?.key || 'new')
@@ -1628,27 +1638,27 @@ async function renderWallet(app) {
           <span style="color:#6b7280">${e.reason}</span>
           <span style="font-weight:600;color:${e.points > 0 ? '#059669' : '#dc2626'}">${e.points > 0 ? '+' : ''}${e.points}</span>
         </div>`).join('')
-    : `<div style="color:#9ca3af;font-size:13px;text-align:center;padding:12px 0">完成第一笔交易后开始积累声誉</div>`
+    : `<div style="color:#9ca3af;font-size:13px;text-align:center;padding:12px 0">${t('完成第一笔交易后开始积累声誉')}</div>`
 
   app.innerHTML = shell(`
-    <h1 class="page-title">我的钱包</h1>
+    <h1 class="page-title">${t('我的钱包')}</h1>
     <div class="card">
       <div style="text-align:center;padding:16px 0 8px">
-        <div style="font-size:12px;color:#6b7280;margin-bottom:4px">可用余额</div>
+        <div style="font-size:12px;color:#6b7280;margin-bottom:4px">${t('可用余额')}</div>
         <div style="font-size:40px;font-weight:800;color:#4f46e5">${(wallet.balance || 0).toFixed(2)}<span style="font-size:16px;font-weight:400"> WAZ</span></div>
       </div>
       <div class="divider"></div>
       <div class="wallet-grid">
         <div class="wallet-item">
-          <div class="wallet-label">质押中</div>
+          <div class="wallet-label">${t('质押中')}</div>
           <div class="wallet-value">${(wallet.staked || 0).toFixed(2)}<span class="wallet-unit"> WAZ</span></div>
         </div>
         <div class="wallet-item">
-          <div class="wallet-label">托管中</div>
+          <div class="wallet-label">${t('托管中')}</div>
           <div class="wallet-value">${(wallet.escrowed || 0).toFixed(2)}<span class="wallet-unit"> WAZ</span></div>
         </div>
         <div class="wallet-item" style="grid-column:1/-1">
-          <div class="wallet-label">历史累计收益</div>
+          <div class="wallet-label">${t('历史累计收益')}</div>
           <div class="wallet-value">${(wallet.earned || 0).toFixed(2)}<span class="wallet-unit"> WAZ</span></div>
         </div>
       </div>
@@ -1656,25 +1666,25 @@ async function renderWallet(app) {
 
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-        <div style="font-weight:700">声誉积分</div>
-        <div style="font-size:20px;font-weight:800;color:#4f46e5">${curPoints} 分</div>
+        <div style="font-weight:700">${t('声誉积分')}</div>
+        <div style="font-size:20px;font-weight:800;color:#4f46e5">${curPoints} ${t('分')}</div>
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <span style="font-size:14px;font-weight:600">${LEVEL_LABELS[rep.level?.key || 'new'] || '新手 🌱'}</span>
-        ${nextKey ? `<span style="font-size:12px;color:#6b7280">距 ${LEVEL_LABELS[nextKey]} 还差 ${nextThreshold - curPoints} 分</span>` : '<span style="font-size:12px;color:#f59e0b">最高等级 🏆</span>'}
+        ${nextKey ? `<span style="font-size:12px;color:#6b7280">${t('距')} ${LEVEL_LABELS[nextKey]} ${t('还差')} ${nextThreshold - curPoints} ${t('分')}</span>` : `<span style="font-size:12px;color:#f59e0b">${t('最高等级 🏆')}</span>`}
       </div>
       <div style="height:8px;background:#f3f4f6;border-radius:99px;overflow:hidden;margin-bottom:12px">
         <div style="height:100%;width:${progressPct}%;background:linear-gradient(90deg,#4f46e5,#7c3aed);border-radius:99px;transition:width .3s"></div>
       </div>
       <div class="wallet-grid" style="margin-bottom:12px">
-        <div class="wallet-item"><div class="wallet-label">成交次数</div><div class="wallet-value" style="font-size:18px">${rep.transactions_done || 0}</div></div>
-        <div class="wallet-item"><div class="wallet-label">争议胜/败</div><div class="wallet-value" style="font-size:18px">${rep.disputes_won || 0}/${rep.disputes_lost || 0}</div></div>
+        <div class="wallet-item"><div class="wallet-label">${t('成交次数')}</div><div class="wallet-value" style="font-size:18px">${rep.transactions_done || 0}</div></div>
+        <div class="wallet-item"><div class="wallet-label">${t('争议胜/败')}</div><div class="wallet-value" style="font-size:18px">${rep.disputes_won || 0}/${rep.disputes_lost || 0}</div></div>
         <div class="wallet-item" style="grid-column:1/-1">
-          <div class="wallet-label">质押优惠</div>
-          <div class="wallet-value" style="font-size:15px">${rep.level?.stakeDiscount > 0 ? `-${(rep.level.stakeDiscount * 100).toFixed(0)}%（当前 ${((0.15 - rep.level.stakeDiscount) * 100).toFixed(0)}%）` : '暂无（升到可信即可享受 -5%）'}</div>
+          <div class="wallet-label">${t('质押优惠')}</div>
+          <div class="wallet-value" style="font-size:15px">${rep.level?.stakeDiscount > 0 ? `-${(rep.level.stakeDiscount * 100).toFixed(0)}%（当前 ${((0.15 - rep.level.stakeDiscount) * 100).toFixed(0)}%）` : t('暂无（升到可信即可享受 -5%）')}</div>
         </div>
       </div>
-      <div style="font-weight:600;font-size:13px;margin-bottom:6px">最近记录</div>
+      <div style="font-weight:600;font-size:13px;margin-bottom:6px">${t('最近记录')}</div>
       ${recentHtml}
     </div>
 
@@ -1692,7 +1702,7 @@ async function renderWallet(app) {
     <div class="alert alert-info" style="font-size:13px">
       WAZ 为协议内模拟货币。Phase 2 将接入真实链上资产。
     </div>
-    <button class="btn btn-gray" onclick="doLogout()">退出登录</button>
+    <button class="btn btn-gray" onclick="doLogout()">${t('退出登录')}</button>
   `, 'wallet')
 }
 
@@ -1704,7 +1714,7 @@ window.doLogout = () => {
 
 window.doTopup = async (amount) => {
   const msgEl = document.getElementById('topup-msg')
-  msgEl.innerHTML = `<div class="alert alert-info"><span class="spinner"></span>充值中...</div>`
+  msgEl.innerHTML = `<div class="alert alert-info"><span class="spinner"></span>${t('充值中...')}</div>`
   const res = await POST('/wallet/topup', { amount })
   if (res.error) { msgEl.innerHTML = alert$('error', res.error); return }
   msgEl.innerHTML = alert$('success', `✅ 已充入 ${res.added} WAZ，当前余额 ${res.new_balance.toFixed(2)} WAZ`)
@@ -1779,7 +1789,7 @@ async function renderNotifications(app) {
   const data = await GET('/notifications')
   const list = (data.notifications || [])
   const html = list.length === 0
-    ? `<div class="empty"><div class="empty-icon">🔔</div><div class="empty-text">暂无通知</div></div>`
+    ? `<div class="empty"><div class="empty-icon">🔔</div><div class="empty-text">${t('暂无通知')}</div></div>`
     : list.map(n => `
       <div class="card" ${n.order_id ? `onclick="navigate('#order/${n.order_id}')" style="cursor:pointer"` : ''}>
         <div style="display:flex;gap:12px;align-items:flex-start">
@@ -1792,7 +1802,7 @@ async function renderNotifications(app) {
         </div>
       </div>`).join('')
 
-  app.innerHTML = shell(`<h1 class="page-title">通知</h1>${html}`, 'notifications')
+  app.innerHTML = shell(`<h1 class="page-title">${t('通知')}</h1>${html}`, 'notifications')
 }
 
 // ─── Skill 市场页 ─────────────────────────────────────────────

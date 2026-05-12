@@ -1495,9 +1495,10 @@ async function renderSeller(app) {
         <details style="margin-bottom:16px">
           <summary style="font-size:12px;color:#9ca3af;cursor:pointer">${t('使用自己的 Anthropic API Key（不限次数）')}</summary>
           <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
-            <input class="form-control" id="import-own-key" type="password"
+            <input class="form-control" id="import-own-key" type="text"
               placeholder="sk-ant-..."
-              style="font-family:monospace;font-size:12px;flex:1"
+              autocomplete="off"
+              style="font-family:monospace;font-size:12px;flex:1;-webkit-text-security:disc"
               value="${localStorage.getItem('webaz_own_ak') || ''}"
               oninput="localStorage.setItem('webaz_own_ak', this.value.trim())">
             <button class="btn btn-outline btn-sm" onclick="localStorage.removeItem('webaz_own_ak');document.getElementById('import-own-key').value=''" style="white-space:nowrap">${t('清除')}</button>

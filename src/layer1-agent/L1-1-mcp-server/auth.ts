@@ -10,6 +10,7 @@ export interface AuthUser {
   id: string
   name: string
   role: string
+  roles: string       // JSON array string
   api_key: string
 }
 
@@ -19,7 +20,7 @@ export function authenticate(
 ): AuthUser | null {
   if (!apiKey || apiKey === '') return null
   return db
-    .prepare('SELECT id, name, role, api_key FROM users WHERE api_key = ?')
+    .prepare('SELECT id, name, role, roles, api_key FROM users WHERE api_key = ?')
     .get(apiKey) as AuthUser | null
 }
 

@@ -101,17 +101,58 @@ app.post('/api/register', (req, res) => {
 
   const id = generateId('usr')
   const apiKey = generateId('key')
-  db.prepare('INSERT INTO users (id, name, role, api_key) VALUES (?,?,?,?)').run(id, name.trim(), role, apiKey)
+  db.prepare('INSERT INTO users (id, name, role, roles, api_key) VALUES (?,?,?,?,?)').run(id, name.trim(), role, JSON.stringify([role]), apiKey)
   db.prepare('INSERT INTO wallets (user_id, balance) VALUES (?,1000)').run(id)
 
-  res.json({ success: true, api_key: apiKey, user_id: id, name: name.trim(), role })
+  res.json({ success: true, api_key: apiKey, user_id: id, name: name.trim(), role, roles: [role] })
 })
 
 // 当前用户信息
 app.get('/api/me', (req, res) => {
   const user = auth(req, res); if (!user) return
   const wallet = db.prepare('SELECT * FROM wallets WHERE user_id = ?').get(user.id) as Record<string, number>
-  res.json({ ...user, api_key: undefined, wallet })
+  const roles: string[] = JSON.parse((user.roles as string) || JSON.stringify([user.role]))
+  res.json({ ...user, api_key: undefined, roles, wallet })
+})
+
+// 个人资料：查看 API Key
+app.get('/api/profile', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  const wallet = db.prepare('SELECT balance, staked, escrowed, earned FROM wallets WHERE user_id = ?').get(user.id) as Record<string, number>
+  const roles: string[] = JSON.parse((user.roles as string) || JSON.stringify([user.role]))
+  res.json({ id: user.id, name: user.name, role: user.role, roles, api_key: user.api_key, wallet })
+})
+
+// 添加角色
+app.post('/api/profile/add-role', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  const { role } = req.body
+  const validRoles = ['buyer', 'seller', 'logistics', 'arbitrator']
+  if (!validRoles.includes(role)) return void res.json({ error: '角色无效' })
+  const roles: string[] = JSON.parse((user.roles as string) || JSON.stringify([user.role]))
+  if (roles.includes(role)) return void res.json({ error: '已拥有该角色' })
+  roles.push(role)
+  db.prepare("UPDATE users SET roles = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(roles), user.id as string)
+  res.json({ success: true, roles })
+})
+
+// 切换激活角色
+app.post('/api/profile/switch-role', (req, res) => {
+  const user = auth(req, res); if (!user) return
+  const { role } = req.body
+  const roles: string[] = JSON.parse((user.roles as string) || JSON.stringify([user.role]))
+  if (!roles.includes(role)) return void res.json({ error: '你还没有该角色，请先添加' })
+  db.prepare("UPDATE users SET role = ?, updated_at = datetime('now') WHERE id = ?").run(role, user.id as string)
+  res.json({ success: true, role, roles })
+})
+
+// 通过名字找回 API Key（Phase 0 无需验证，Phase 1 需邮箱/短信）
+app.post('/api/recover-key', (req, res) => {
+  const { name } = req.body
+  if (!name?.trim()) return void res.json({ error: '请填写注册时使用的名称' })
+  const users = db.prepare("SELECT name, role, roles, api_key FROM users WHERE name = ? AND id != 'sys_protocol'").all(name.trim()) as Record<string, unknown>[]
+  if (users.length === 0) return void res.json({ error: '未找到该名称的账号' })
+  res.json({ found: users.length, accounts: users })
 })
 
 // 搜索商品（声誉权重排序）

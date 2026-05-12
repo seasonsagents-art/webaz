@@ -25,7 +25,8 @@ export function initDatabase(): Database.Database {
     CREATE TABLE IF NOT EXISTS users (
       id          TEXT PRIMARY KEY,          -- 唯一ID，格式：usr_xxxx
       name        TEXT NOT NULL,
-      role        TEXT NOT NULL,             -- seller / buyer / logistics / reviewer / arbitrator / promoter
+      role        TEXT NOT NULL,             -- 当前激活角色
+      roles       TEXT DEFAULT '[]',         -- 拥有的所有角色（JSON数组）
       api_key     TEXT UNIQUE NOT NULL,      -- Agent 调用时用这个验证身份
       stake       REAL DEFAULT 0,            -- 当前质押金额（模拟货币）
       reputation  REAL DEFAULT 100,          -- 声誉分（满分100）
@@ -174,6 +175,12 @@ export function initDatabase(): Database.Database {
     );
 
   `)
+
+  // 迁移：为已有数据库添加 roles 列
+  try {
+    db.exec(`ALTER TABLE users ADD COLUMN roles TEXT DEFAULT '[]'`)
+  } catch { /* 列已存在 */ }
+  db.exec(`UPDATE users SET roles = json_array(role) WHERE roles = '[]' OR roles IS NULL`)
 
   console.log('✅ L0-1 数据库初始化完成：', DB_PATH)
   return db

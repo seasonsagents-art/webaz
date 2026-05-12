@@ -75,6 +75,7 @@ async function render(page, params) {
     case 'skills':        return renderSkills(app)
     case 'disputes':      return renderDisputeList(app)
     case 'dispute':       return renderDisputeDetail(app, params[0])
+    case 'profile':       return renderProfile(app)
     case 'login':         return renderLogin()
     default:              return renderShop(app)
   }
@@ -154,7 +155,10 @@ function shell(content, activeTab) {
       <a class="navbar-brand" href="#shop">🦞 WebAZ</a>
       <div class="navbar-actions">
         ${state.user
-          ? `<span style="font-size:13px;color:#6b7280">${state.user.name}</span>`
+          ? `<button onclick="navigate('#profile')" style="background:none;border:none;cursor:pointer;display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:8px;color:#374151" title="个人资料 & 设置">
+               <span style="font-size:13px;color:#6b7280">${state.user.name}</span>
+               <span style="font-size:18px">👤</span>
+             </button>`
           : `<button class="btn btn-primary btn-sm" onclick="navigate('#login')">登录</button>`}
       </div>
     </nav>
@@ -168,6 +172,158 @@ function shell(content, activeTab) {
           </span>${t.label}
         </button>`).join('')}
     </nav>`
+}
+
+// ─── 个人资料 & 设置 ──────────────────────────────────────────
+
+async function renderProfile(app) {
+  app.innerHTML = shell(loading$(), 'profile')
+  const data = await GET('/profile')
+  if (data.error) return void (app.innerHTML = shell(alert$('error', data.error), 'profile'))
+
+  const roles = data.roles || [data.role]
+  const allRoles = ['buyer', 'seller', 'logistics', 'arbitrator']
+  const roleLabels = { buyer: '买家', seller: '卖家', logistics: '物流', arbitrator: '仲裁员' }
+  const roleIcons  = { buyer: '🛍️', seller: '🏪', logistics: '🚚', arbitrator: '⚖️' }
+  const addable = allRoles.filter(r => !roles.includes(r))
+
+  app.innerHTML = shell(`
+    <div class="page-header"><h2>👤 个人资料 & 设置</h2></div>
+    <div id="profile-msg"></div>
+
+    <!-- 基本信息 -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-body">
+        <div style="font-size:13px;color:#6b7280;margin-bottom:4px">昵称</div>
+        <div style="font-size:18px;font-weight:600;margin-bottom:16px">${data.name}</div>
+
+        <div style="font-size:13px;color:#6b7280;margin-bottom:6px">API Key <span style="color:#9ca3af">（你的唯一身份凭证，请妥善保管）</span></div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+          <code id="apikey-display" style="background:#f3f4f6;padding:6px 10px;border-radius:6px;font-size:13px;flex:1;word-break:break-all;filter:blur(4px);user-select:none">${data.api_key}</code>
+          <button class="btn btn-outline btn-sm" onclick="toggleApiKey()" id="btn-reveal" style="white-space:nowrap">显示</button>
+          <button class="btn btn-outline btn-sm" onclick="copyApiKey('${data.api_key}')" style="white-space:nowrap">复制</button>
+        </div>
+
+        <div style="font-size:13px;color:#6b7280;margin-bottom:6px">钱包余额</div>
+        <div style="font-size:16px;font-weight:600;color:#059669">${data.wallet?.balance?.toFixed(2) ?? '—'} WAZ</div>
+      </div>
+    </div>
+
+    <!-- 角色管理 -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-body">
+        <div style="font-size:15px;font-weight:600;margin-bottom:12px">角色管理</div>
+
+        <div style="font-size:13px;color:#6b7280;margin-bottom:8px">已有角色</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px">
+          ${roles.map(r => `
+            <button onclick="switchRole('${r}')" style="
+              display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:10px;font-size:14px;cursor:pointer;border:2px solid;
+              ${r === data.role ? 'background:#eff6ff;border-color:#3b82f6;color:#1d4ed8;font-weight:600' : 'background:#f9fafb;border-color:#e5e7eb;color:#374151'}
+            " title="${r === data.role ? '当前激活' : '点击切换'}">
+              ${roleIcons[r]} ${roleLabels[r]}
+              ${r === data.role ? '<span style="font-size:11px;color:#3b82f6">● 激活</span>' : ''}
+            </button>
+          `).join('')}
+        </div>
+
+        ${addable.length > 0 ? `
+          <div style="font-size:13px;color:#6b7280;margin-bottom:8px">添加新角色</div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            ${addable.map(r => `
+              <button onclick="addRole('${r}')" style="
+                display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:10px;font-size:14px;cursor:pointer;
+                background:#f9fafb;border:2px dashed #d1d5db;color:#6b7280
+              ">${roleIcons[r]} + ${roleLabels[r]}</button>
+            `).join('')}
+          </div>
+        ` : '<div style="font-size:13px;color:#6b7280">已拥有全部角色</div>'}
+      </div>
+    </div>
+
+    <!-- 找回密钥 -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-body">
+        <div style="font-size:15px;font-weight:600;margin-bottom:12px">找回密钥</div>
+        <p style="font-size:13px;color:#6b7280;margin-bottom:12px">如果你遗失了 API Key，可以通过注册名称找回。</p>
+        <div style="display:flex;gap:8px">
+          <input class="form-control" id="recover-name" placeholder="输入注册时的名称" style="flex:1">
+          <button class="btn btn-outline" onclick="recoverKey()">找回</button>
+        </div>
+        <div id="recover-result" style="margin-top:10px"></div>
+      </div>
+    </div>
+
+    <!-- 退出 -->
+    <div class="card">
+      <div class="card-body">
+        <button class="btn btn-outline btn-sm" onclick="logout()" style="color:#dc2626;border-color:#dc2626">退出登录</button>
+      </div>
+    </div>
+  `, 'profile')
+}
+
+let apiKeyVisible = false
+function toggleApiKey() {
+  apiKeyVisible = !apiKeyVisible
+  const el = document.getElementById('apikey-display')
+  const btn = document.getElementById('btn-reveal')
+  if (el) el.style.filter = apiKeyVisible ? 'none' : 'blur(4px)'
+  if (btn) btn.textContent = apiKeyVisible ? '隐藏' : '显示'
+}
+
+function copyApiKey(key) {
+  navigator.clipboard.writeText(key).then(() => {
+    const msgEl = document.getElementById('profile-msg')
+    if (msgEl) { msgEl.innerHTML = alert$('success', 'API Key 已复制到剪贴板'); setTimeout(() => msgEl.innerHTML = '', 2000) }
+  })
+}
+
+async function switchRole(role) {
+  const res = await POST('/profile/switch-role', { role })
+  if (res.error) return void (document.getElementById('profile-msg').innerHTML = alert$('error', res.error))
+  state.user = null
+  navigate('#profile')
+}
+
+async function addRole(role) {
+  const res = await POST('/profile/add-role', { role })
+  if (res.error) return void (document.getElementById('profile-msg').innerHTML = alert$('error', res.error))
+  state.user = null
+  navigate('#profile')
+}
+
+async function recoverKey() {
+  const name = document.getElementById('recover-name')?.value?.trim()
+  if (!name) return
+  const res = await api('POST', '/recover-key', { name })
+  const el = document.getElementById('recover-result')
+  if (!el) return
+  if (res.error) return void (el.innerHTML = alert$('error', res.error))
+  el.innerHTML = res.accounts.map(a => `
+    <div style="background:#f3f4f6;border-radius:8px;padding:10px 12px;margin-bottom:8px">
+      <div style="font-size:13px;font-weight:600">${a.name} · ${a.role}</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+        <code style="font-size:12px;color:#6b7280;filter:blur(3px);cursor:pointer" onclick="this.style.filter='none'">${a.api_key}</code>
+        <button class="btn btn-outline btn-sm" onclick="useKey('${a.api_key}')">使用此账号</button>
+      </div>
+    </div>
+  `).join('')
+}
+
+function useKey(key) {
+  localStorage.setItem('webaz_key', key)
+  state.apiKey = key
+  state.user = null
+  navigate('#shop')
+}
+
+function logout() {
+  localStorage.removeItem('webaz_key')
+  state.apiKey = null
+  state.user = null
+  if (state.sse) { state.sse.close(); state.sse = null }
+  navigate('#login')
 }
 
 // ─── 登录/注册页 ──────────────────────────────────────────────

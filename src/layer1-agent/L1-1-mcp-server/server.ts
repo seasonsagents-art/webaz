@@ -357,6 +357,38 @@ action 说明：
       required: ['action'],
     },
   },
+  {
+    name: 'webaz_mykey',
+    description: 'Recover your api_key by name, or view your profile and roles. Use this if you forgot your api_key.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The name you registered with' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'webaz_profile',
+    description: 'View your profile, manage roles (add a new role or switch active role). One account can hold multiple roles.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        api_key:  { type: 'string', description: 'Your api_key' },
+        action: {
+          type: 'string',
+          enum: ['view', 'add_role', 'switch_role'],
+          description: 'view: show profile & api_key | add_role: add a new role | switch_role: switch active role',
+        },
+        role: {
+          type: 'string',
+          enum: ['buyer', 'seller', 'logistics', 'arbitrator'],
+          description: 'Role to add or switch to (required for add_role / switch_role)',
+        },
+      },
+      required: ['api_key', 'action'],
+    },
+  },
 ]
 
 // ─── 工具处理函数 ─────────────────────────────────────────────
@@ -405,8 +437,8 @@ function handleRegister(args: Record<string, unknown>) {
   const id = generateId('usr')
   const apiKey = generateId('key')
 
-  db.prepare('INSERT INTO users (id, name, role, api_key) VALUES (?, ?, ?, ?)').run(
-    id, name, role, apiKey
+  db.prepare('INSERT INTO users (id, name, role, roles, api_key) VALUES (?, ?, ?, ?, ?)').run(
+    id, name, role, JSON.stringify([role]), apiKey
   )
   db.prepare('INSERT INTO wallets (user_id, balance) VALUES (?, ?)').run(id, initialBalance)
 
@@ -1114,6 +1146,66 @@ function handleSkill(args: Record<string, unknown>) {
   return { error: `未知 action：${action}。可选：list, publish, subscribe, unsubscribe, my_skills, my_subs` }
 }
 
+function handleMyKey(args: Record<string, unknown>) {
+  const name = (args.name as string)?.trim()
+  if (!name) return { error: 'name is required' }
+  const users = db.prepare(
+    `SELECT name, role, roles, api_key FROM users WHERE name = ? AND id != 'sys_protocol'`
+  ).all(name) as Record<string, unknown>[]
+  if (users.length === 0) return { error: `No account found with name "${name}"` }
+  return {
+    found: users.length,
+    accounts: users.map(u => ({
+      name: u.name,
+      role: u.role,
+      roles: JSON.parse((u.roles as string) || JSON.stringify([u.role])),
+      api_key: u.api_key,
+    })),
+    tip: 'Keep your api_key safe — it is your identity on the protocol.',
+  }
+}
+
+function handleProfile(args: Record<string, unknown>) {
+  const auth = requireAuth(db, args.api_key as string)
+  if ('error' in auth) return auth
+  const { user } = auth
+  const action = args.action as string
+  const roles: string[] = JSON.parse((user.roles as string) || JSON.stringify([user.role]))
+
+  if (action === 'view') {
+    const wallet = db.prepare('SELECT balance, staked, escrowed, earned FROM wallets WHERE user_id = ?').get(user.id) as Record<string, number>
+    return {
+      id: user.id,
+      name: user.name,
+      active_role: user.role,
+      roles,
+      api_key: user.api_key,
+      wallet,
+      tip: 'Use add_role to add a new role, switch_role to change your active role.',
+    }
+  }
+
+  const validRoles = ['buyer', 'seller', 'logistics', 'arbitrator']
+  const role = args.role as string
+
+  if (action === 'add_role') {
+    if (!validRoles.includes(role)) return { error: `Invalid role. Options: ${validRoles.join(', ')}` }
+    if (roles.includes(role)) return { error: `You already have the "${role}" role` }
+    roles.push(role)
+    db.prepare("UPDATE users SET roles = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(roles), user.id as string)
+    return { success: true, active_role: user.role, roles, message: `Role "${role}" added. Use switch_role to activate it.` }
+  }
+
+  if (action === 'switch_role') {
+    if (!validRoles.includes(role)) return { error: `Invalid role. Options: ${validRoles.join(', ')}` }
+    if (!roles.includes(role)) return { error: `You don't have the "${role}" role yet. Use add_role first.` }
+    db.prepare("UPDATE users SET role = ?, updated_at = datetime('now') WHERE id = ?").run(role, user.id as string)
+    return { success: true, active_role: role, roles, message: `Switched to "${role}" mode.` }
+  }
+
+  return { error: `Unknown action: ${action}. Options: view, add_role, switch_role` }
+}
+
 // ─── 结算逻辑（买家确认后自动执行）──────────────────────────────
 
 function settleOrder(db: Database.Database, orderId: string) {
@@ -1211,6 +1303,8 @@ export async function startMCPServer() {
         case 'webaz_dispute':        result = handleDispute(args); break
         case 'webaz_notifications':  result = handleNotifications(args); break
         case 'webaz_skill':          result = handleSkill(args); break
+        case 'webaz_mykey':          result = handleMyKey(args); break
+        case 'webaz_profile':        result = handleProfile(args); break
         default: result = { error: `未知工具：${name}` }
       }
     } catch (err) {

@@ -1,6 +1,6 @@
 {
   "name": "@seasonkoh/webaz",
-  "version": "0.1.4",
+  "version": "0.1.6",
   "description": "Agent-native decentralized commerce protocol. Humans and AI agents trade on the same protocol via MCP tools.",
   "main": "dist/mcp.js",
   "bin": {

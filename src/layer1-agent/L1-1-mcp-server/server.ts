@@ -705,11 +705,21 @@ function handleUpdateOrder(args: Record<string, unknown>) {
   const evidenceDesc = (args.evidence_description as string) ?? ''
 
   // 验证订单存在且该用户是参与方
-  const order = db
+  let order = db
     .prepare('SELECT * FROM orders WHERE id = ?')
     .get(orderId) as Record<string, unknown> | undefined
 
   if (!order) return { error: `订单不存在：${orderId}` }
+
+  // 物流首次操作：先绑定再做参与方检查
+  if (
+    (action === 'pickup' || action === 'transit') &&
+    !order.logistics_id &&
+    user.role === 'logistics'
+  ) {
+    db.prepare('UPDATE orders SET logistics_id = ? WHERE id = ?').run(user.id, orderId)
+    order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as Record<string, unknown>
+  }
 
   const isParticipant =
     order.buyer_id === user.id ||
@@ -718,15 +728,6 @@ function handleUpdateOrder(args: Record<string, unknown>) {
 
   if (!isParticipant && user.role !== 'arbitrator') {
     return { error: '你不是这笔订单的参与方，无法操作' }
-  }
-
-  // 如果是物流首次操作，绑定物流方
-  if (
-    (action === 'pickup' || action === 'transit') &&
-    order.logistics_id === null &&
-    user.role === 'logistics'
-  ) {
-    db.prepare('UPDATE orders SET logistics_id = ? WHERE id = ?').run(user.id, orderId)
   }
 
   // action → 状态映射

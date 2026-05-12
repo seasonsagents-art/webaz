@@ -229,7 +229,9 @@ app.get('/api/orders/:id', (req, res) => {
   if (!statusInfo) return void res.status(404).json({ error: '订单不存在' })
 
   const order = statusInfo.order as Record<string, unknown>
-  if (order.buyer_id !== user.id && order.seller_id !== user.id && order.logistics_id !== user.id && user.role !== 'arbitrator') {
+  const isLogisticsPickup = (user as Record<string,unknown>).role === 'logistics' &&
+    !order.logistics_id && order.status === 'shipped'
+  if (order.buyer_id !== user.id && order.seller_id !== user.id && order.logistics_id !== user.id && user.role !== 'arbitrator' && !isLogisticsPickup) {
     return void res.status(403).json({ error: '无权查看此订单' })
   }
 

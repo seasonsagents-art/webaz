@@ -182,7 +182,7 @@ export function initDatabase(): Database.Database {
   } catch { /* 列已存在 */ }
   db.exec(`UPDATE users SET roles = json_array(role) WHERE roles = '[]' OR roles IS NULL`)
 
-  console.log('✅ L0-1 数据库初始化完成：', DB_PATH)
+  console.error('✅ L0-1 数据库初始化完成：', DB_PATH)
   return db
 }
 

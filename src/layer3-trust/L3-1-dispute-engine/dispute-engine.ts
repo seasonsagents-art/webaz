@@ -226,7 +226,8 @@ export function arbitrateDispute(
   ruling: 'refund_buyer' | 'release_seller' | 'partial_refund' | 'liability_split',
   reason: string,
   refundAmount?: number,
-  liabilityParties?: LiabilityEntry[]
+  liabilityParties?: LiabilityEntry[],
+  liablePartyId?: string   // 指定责任方 user_id（用于 partial_refund 第三方责任场景）
 ): { success: boolean; error?: string; message?: string; settlement?: Record<string, unknown> } {
 
   const dispute = db.prepare('SELECT * FROM disputes WHERE id = ?').get(disputeId) as DisputeRecord | undefined
@@ -244,10 +245,10 @@ export function arbitrateDispute(
   // 执行资金处置
   const settlement = ruling === 'liability_split' && liabilityParties
     ? executeLiabilitySplit(db, dispute.order_id, liabilityParties, refundAmount)
-    : executeSettlement(db, dispute.order_id, ruling, refundAmount)
+    : executeSettlement(db, dispute.order_id, ruling, refundAmount, liablePartyId)
   if (!settlement.success) return { success: false, error: settlement.error }
 
-  // 收取仲裁费（败诉方付 1%，最低 1 WAZ）
+  // 收取仲裁费（败诉/责任方付 1%，最低 1 WAZ）
   const order = db.prepare('SELECT total_amount, buyer_id, seller_id FROM orders WHERE id = ?')
     .get(dispute.order_id) as { total_amount: number; buyer_id: string; seller_id: string } | undefined
   const sysUser = db.prepare("SELECT id FROM users WHERE id = 'sys_protocol'").get() as { id: string }
@@ -256,22 +257,26 @@ export function arbitrateDispute(
   if (order) {
     const amt = order.total_amount
     if (ruling === 'refund_buyer') {
-      // 卖家败诉
       const f = chargeArbitrationFee(db, order.seller_id, amt, arbitratorId, sysUser.id)
       if (f.fee > 0) arbFees[order.seller_id] = f.fee
     } else if (ruling === 'release_seller') {
-      // 买家败诉
       const f = chargeArbitrationFee(db, order.buyer_id, amt, arbitratorId, sysUser.id)
       if (f.fee > 0) arbFees[order.buyer_id] = f.fee
     } else if (ruling === 'partial_refund') {
-      // 折中：双方各付 0.5%（最低各 0.5 WAZ，实际按 chargeArbitrationFee 的 min 逻辑）
-      const halfAmt = amt * 0.5
-      const fb = chargeArbitrationFee(db, order.buyer_id, halfAmt, arbitratorId, sysUser.id)
-      const fs = chargeArbitrationFee(db, order.seller_id, halfAmt, arbitratorId, sysUser.id)
-      if (fb.fee > 0) arbFees[order.buyer_id] = fb.fee
-      if (fs.fee > 0) arbFees[order.seller_id] = fs.fee
+      // 有指定责任方：仲裁费全由责任方承担
+      // 无责任方：买卖双方各付 0.5%
+      const payerId = liablePartyId ?? null
+      if (payerId) {
+        const f = chargeArbitrationFee(db, payerId, amt, arbitratorId, sysUser.id)
+        if (f.fee > 0) arbFees[payerId] = f.fee
+      } else {
+        const halfAmt = amt * 0.5
+        const fb = chargeArbitrationFee(db, order.buyer_id,  halfAmt, arbitratorId, sysUser.id)
+        const fs = chargeArbitrationFee(db, order.seller_id, halfAmt, arbitratorId, sysUser.id)
+        if (fb.fee > 0) arbFees[order.buyer_id]  = fb.fee
+        if (fs.fee > 0) arbFees[order.seller_id] = fs.fee
+      }
     } else if (ruling === 'liability_split' && liabilityParties) {
-      // 各责任方按比例分担
       const totalLiability = liabilityParties.reduce((s, p) => s + p.amount, 0) || amt
       for (const p of liabilityParties) {
         const share = (p.amount / totalLiability) * amt
@@ -498,7 +503,8 @@ function executeSettlement(
   db: Database.Database,
   orderId: string,
   ruling: string,
-  refundAmount?: number
+  refundAmount?: number,
+  liablePartyId?: string
 ): { success: boolean; error?: string; detail?: Record<string, unknown> } {
 
   const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as Record<string, unknown> | undefined
@@ -576,34 +582,90 @@ function executeSettlement(
     }
 
   } else if (ruling === 'partial_refund') {
-    // ── 折中处理：部分退款 ────────────────────────────────────────
     const refund = refundAmount ?? Math.round(totalAmount * 0.5 * 100) / 100
     if (refund > totalAmount) return { success: false, error: `退款金额 ${refund} 超出订单总额 ${totalAmount}` }
-    const sellerGet = Math.round((totalAmount - refund) * 100) / 100
-    const stakeReturn = Math.round(stakeAmount * 0.5 * 100) / 100  // 质押返一半
 
-    db.transaction(() => {
-      db.prepare('UPDATE wallets SET escrowed = escrowed - ? WHERE user_id = ?').run(totalAmount, buyerId)
-      if (refund > 0) {
-        db.prepare('UPDATE wallets SET balance = balance + ? WHERE user_id = ?').run(refund, buyerId)
-      }
-      if (sellerGet > 0) {
-        db.prepare('UPDATE wallets SET balance = balance + ? WHERE user_id = ?').run(sellerGet, sellerId)
-      }
-      if (stakeAmount > 0) {
-        db.prepare('UPDATE wallets SET staked = staked - ?, balance = balance + ? WHERE user_id = ?')
-          .run(stakeAmount, stakeReturn, sellerId)
-      }
-      transition(db, orderId, 'cancelled', sysUser.id, [], `争议裁定：部分退款 ${refund} WAZ`)
-    })()
+    if (liablePartyId) {
+      // ── 第三方责任 partial_refund ────────────────────────────────
+      // 卖家全额结算（正常收款），买家赔偿由责任方钱包直接支付
+      const protocolFee  = Math.round(totalAmount * 0.02 * 100) / 100
+      const logisticsFee = order.logistics_id ? Math.round(totalAmount * 0.05 * 100) / 100 : 0
+      const sellerAmount = totalAmount - protocolFee - logisticsFee
 
-    return {
-      success: true,
-      detail: {
-        ruling: 'partial_refund',
-        buyer_refund: refund,
-        seller_received: sellerGet,
-        seller_stake_returned: stakeReturn,
+      // 检查责任方余额是否足够
+      const liableWallet = db.prepare('SELECT balance, staked FROM wallets WHERE user_id = ?')
+        .get(liablePartyId) as { balance: number; staked: number } | undefined
+      const liableAvailable = (liableWallet?.balance ?? 0) + (liableWallet?.staked ?? 0)
+      const actualRefund = Math.min(refund, liableAvailable)
+
+      db.transaction(() => {
+        // 1. 释放托管 → 正常结算给卖家
+        db.prepare('UPDATE wallets SET escrowed = escrowed - ? WHERE user_id = ?').run(totalAmount, buyerId)
+        db.prepare('UPDATE wallets SET balance = balance + ? WHERE user_id = ?').run(sellerAmount, sellerId)
+        if (order.logistics_id && logisticsFee > 0) {
+          db.prepare('UPDATE wallets SET balance = balance + ? WHERE user_id = ?').run(logisticsFee, order.logistics_id as string)
+        }
+        // 2. 返还卖家质押
+        if (stakeAmount > 0) {
+          db.prepare('UPDATE wallets SET staked = staked - ?, balance = balance + ? WHERE user_id = ?')
+            .run(stakeAmount, stakeAmount, sellerId)
+        }
+        // 3. 从责任方钱包扣除赔偿（先质押后余额）
+        if (actualRefund > 0) {
+          const liableStaked = liableWallet?.staked ?? 0
+          if (liableStaked >= actualRefund) {
+            db.prepare('UPDATE wallets SET staked = staked - ? WHERE user_id = ?').run(actualRefund, liablePartyId)
+          } else {
+            const fromBalance = actualRefund - liableStaked
+            db.prepare('UPDATE wallets SET staked = 0, balance = balance - ? WHERE user_id = ?').run(fromBalance, liablePartyId)
+          }
+          // 4. 赔偿金给买家
+          db.prepare('UPDATE wallets SET balance = balance + ? WHERE user_id = ?').run(actualRefund, buyerId)
+        }
+        transition(db, orderId, 'completed', sysUser.id, [], `争议裁定：第三方责任赔偿 ${actualRefund} WAZ，卖家全额结算`)
+      })()
+
+      return {
+        success: true,
+        detail: {
+          ruling: 'partial_refund',
+          liable_party: liablePartyId,
+          buyer_compensation: actualRefund,
+          seller_received: sellerAmount,
+          logistics_fee: logisticsFee,
+          protocol_fee: protocolFee,
+          seller_stake_returned: stakeAmount,
+        }
+      }
+
+    } else {
+      // ── 买卖双方协商 partial_refund（原逻辑）───────────────────────
+      const sellerGet = Math.round((totalAmount - refund) * 100) / 100
+      const stakeReturn = Math.round(stakeAmount * 0.5 * 100) / 100  // 质押返一半
+
+      db.transaction(() => {
+        db.prepare('UPDATE wallets SET escrowed = escrowed - ? WHERE user_id = ?').run(totalAmount, buyerId)
+        if (refund > 0) {
+          db.prepare('UPDATE wallets SET balance = balance + ? WHERE user_id = ?').run(refund, buyerId)
+        }
+        if (sellerGet > 0) {
+          db.prepare('UPDATE wallets SET balance = balance + ? WHERE user_id = ?').run(sellerGet, sellerId)
+        }
+        if (stakeAmount > 0) {
+          db.prepare('UPDATE wallets SET staked = staked - ?, balance = balance + ? WHERE user_id = ?')
+            .run(stakeAmount, stakeReturn, sellerId)
+        }
+        transition(db, orderId, 'cancelled', sysUser.id, [], `争议裁定：部分退款 ${refund} WAZ`)
+      })()
+
+      return {
+        success: true,
+        detail: {
+          ruling: 'partial_refund',
+          buyer_refund: refund,
+          seller_received: sellerGet,
+          seller_stake_returned: stakeReturn,
+        }
       }
     }
   }

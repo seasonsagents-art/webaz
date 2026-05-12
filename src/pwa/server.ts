@@ -696,7 +696,7 @@ app.post('/api/disputes/:id/arbitrate', (req, res) => {
   const user = auth(req, res); if (!user) return
   if ((user as Record<string, unknown>).role !== 'arbitrator') return void res.status(403).json({ error: '仅限仲裁员' })
 
-  const { ruling, reason, refund_amount, liability_parties } = req.body
+  const { ruling, reason, refund_amount, liable_party_id, liability_parties } = req.body
   if (!ruling || !reason) return void res.json({ error: '请提供裁定结果（ruling）和理由（reason）' })
   const validRulings = ['refund_buyer', 'release_seller', 'partial_refund', 'liability_split']
   if (!validRulings.includes(ruling)) {
@@ -719,7 +719,8 @@ app.post('/api/disputes/:id/arbitrate', (req, res) => {
   const result = arbitrateDispute(
     db, req.params.id, user.id as string, ruling, reason,
     refund_amount ? Number(refund_amount) : undefined,
-    liability_parties as LiabilityEntry[] | undefined
+    liability_parties as LiabilityEntry[] | undefined,
+    liable_party_id as string | undefined
   )
   if (!result.success) return void res.json({ error: result.error })
 

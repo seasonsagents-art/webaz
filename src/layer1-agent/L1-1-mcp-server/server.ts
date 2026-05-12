@@ -281,7 +281,7 @@ action 说明：
 ruling 裁定选项（arbitrate 时使用）：
 - refund_buyer：全额退款给买家，扣押卖家部分保证金
 - release_seller：资金释放给卖家（卖家胜诉）
-- partial_refund：部分退款（需指定 refund_amount）`,
+- partial_refund：部分退款（需指定 refund_amount）；若责任在第三方（如物流），同时指定 liable_party（责任方 user_id），此时卖家全额结算，赔偿金从责任方扣除`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -301,6 +301,7 @@ ruling 裁定选项（arbitrate 时使用）：
           description: '裁定结果（arbitrate 时必填）',
         },
         refund_amount: { type: 'number', description: '部分退款金额，仅 ruling=partial_refund 时使用' },
+        liable_party: { type: 'string', description: '第三方责任方 user_id（partial_refund 时可选）：指定后赔偿金从该方扣除，卖家全额结算' },
         ruling_reason: { type: 'string', description: '裁定理由（arbitrate 时必填，将永久记录在链上）' },
       },
       required: ['api_key', 'action'],
@@ -1033,7 +1034,9 @@ function handleDispute(args: Record<string, unknown>) {
       user.id,
       args.ruling as 'refund_buyer' | 'release_seller' | 'partial_refund',
       args.ruling_reason as string,
-      args.refund_amount as number | undefined
+      args.refund_amount as number | undefined,
+      undefined,
+      args.liable_party as string | undefined
     )
 
     // L4-3 争议声誉：裁定完成后更新声誉

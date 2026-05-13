@@ -100,6 +100,19 @@ const MCP_PRODUCT_COLS = [
 ]
 for (const sql of MCP_PRODUCT_COLS) { try { db.exec(sql) } catch {} }
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS price_sessions (
+    token      TEXT PRIMARY KEY,
+    product_id TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
+    price      REAL NOT NULL,
+    quantity   INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at    TEXT
+  )
+`)
+
 // ─── 工具定义（Agent 读这些来理解如何使用协议）────────────────
 
 const TOOLS = [
@@ -162,6 +175,22 @@ agent_summary 是一句话决策摘要，Agent 可直接用于比价决策。`,
     },
   },
   {
+    name: 'webaz_verify_price',
+    description: `在下单前锁定商品价格，获取 session_token。
+Agent 代理用户下单时，应先调用此工具验证并锁定价格，再调用 webaz_place_order 传入 session_token。
+这样可以：1）确保下单时价格与展示价格一致；2）若价格已变动，会提前告知用户；3）平台只对 T0 时刻价格负责。
+session_token 有效期 10 分钟，使用一次后失效。`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        api_key:    { type: 'string', description: '买家的 api_key' },
+        product_id: { type: 'string', description: '商品 ID（从 webaz_search 获得）' },
+        quantity:   { type: 'number', description: '购买数量，默认 1' },
+      },
+      required: ['api_key', 'product_id'],
+    },
+  },
+  {
     name: 'webaz_list_product',
     description: `卖家上架新商品到 WebAZ。
 需要卖家角色的 api_key。
@@ -217,6 +246,10 @@ agent_summary 是一句话决策摘要，Agent 可直接用于比价决策。`,
         quantity: { type: 'number', description: '购买数量，默认 1' },
         shipping_address: { type: 'string', description: '收货地址' },
         notes: { type: 'string', description: '给卖家的备注（可选）' },
+        session_token: {
+          type: 'string',
+          description: '价格锁定 token（推荐）：由 webaz_verify_price 返回，确保下单价格与展示价格一致',
+        },
         promoter_api_key: {
           type: 'string',
           description: '推荐人的 api_key（可选，如果是通过推荐链接来的）',
@@ -460,7 +493,8 @@ function handleInfo() {
     },
     quick_start: {
       seller:    '1. webaz_register(role=seller) → 2. webaz_list_product() → 3. 等通知 webaz_update_order(accept/ship)',
-      buyer:     '1. webaz_register(role=buyer) → 2. webaz_search() → 3. webaz_place_order() → 4. webaz_update_order(confirm)',
+      buyer:     '1. webaz_register(role=buyer) → 2. webaz_search() → 3. webaz_verify_price() → 4. webaz_place_order(session_token) → 5. webaz_update_order(confirm)',
+      agent_buying: '用户提供链接 → 1. webaz_search(query) 找到更优方案 → 2. webaz_verify_price(product_id) 锁定价格 → 3. webaz_place_order(session_token) 下单 → 返回成交理由',
       logistics: '1. webaz_register(role=logistics) → 2. webaz_update_order(pickup) → webaz_update_order(deliver)',
     },
     available_tools: TOOLS.map((t) => ({ name: t.name, description: t.description.split('\n')[0] })),
@@ -601,6 +635,52 @@ function handleSearch(args: Record<string, unknown>) {
   }
 }
 
+function handleVerifyPrice(args: Record<string, unknown>) {
+  const auth = requireAuth(db, args.api_key as string)
+  if ('error' in auth) return auth
+
+  const { user } = auth
+  const productId = args.product_id as string
+  const qty = Number(args.quantity ?? 1)
+  if (!productId) return { error: '请提供 product_id' }
+
+  const product = db.prepare(`
+    SELECT p.*, u.name as seller_name FROM products p
+    JOIN users u ON p.seller_id = u.id
+    WHERE p.id = ? AND p.status = 'active'
+  `).get(productId) as Record<string, unknown> | undefined
+  if (!product) return { error: `商品不存在或已下架：${productId}` }
+  if ((product.stock as number) < qty) {
+    return { error: `库存不足：当前库存 ${product.stock}，请求数量 ${qty}` }
+  }
+
+  const now = new Date()
+  const expiresAt = new Date(now.getTime() + 10 * 60_000)
+  const token = `pst_${now.getTime().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+
+  db.prepare(`
+    INSERT INTO price_sessions (token, product_id, user_id, price, quantity, created_at, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(token, productId, user.id, product.price, qty, now.toISOString(), expiresAt.toISOString())
+
+  const parsed = parseProductForAgent(product)
+  return {
+    session_token: token,
+    verified_price: product.price,
+    quantity: qty,
+    total: (product.price as number) * qty,
+    product: {
+      id: product.id,
+      title: product.title,
+      agent_summary: parsed.agent_summary,
+      specs: parsed.specs,
+    },
+    expires_at: expiresAt.toISOString(),
+    expires_in_seconds: 600,
+    next: `调用 webaz_place_order 时传入 session_token="${token}" 确保以此价格成交`,
+  }
+}
+
 function handleListProduct(args: Record<string, unknown>) {
   const auth = requireAuth(db, args.api_key as string)
   if ('error' in auth) return auth
@@ -702,6 +782,27 @@ function handlePlaceOrder(args: Record<string, unknown>) {
   const quantity = (args.quantity as number) ?? 1
   if ((product.stock as number) < quantity) {
     return { error: `库存不足：当前库存 ${product.stock}，你要购买 ${quantity}` }
+  }
+
+  // 验证 session_token（如果提供）
+  if (args.session_token) {
+    const session = db.prepare(`
+      SELECT * FROM price_sessions WHERE token = ? AND product_id = ? AND user_id = ?
+    `).get(args.session_token as string, args.product_id as string, user.id) as Record<string, unknown> | undefined
+    if (!session) return { error: 'session_token 无效，请重新调用 webaz_verify_price' }
+    if (session.used_at) return { error: 'session_token 已使用，请重新调用 webaz_verify_price' }
+    if (new Date(session.expires_at as string) < new Date()) {
+      return { error: 'session_token 已过期（10分钟有效），请重新调用 webaz_verify_price' }
+    }
+    if ((session.price as number) !== (product.price as number)) {
+      return {
+        error: 'price_changed',
+        message: `商品价格已变动：验证时 ${session.price} WAZ，当前 ${product.price} WAZ`,
+        new_price: product.price,
+        hint: '请重新调用 webaz_verify_price 获取新价格后再下单',
+      }
+    }
+    db.prepare(`UPDATE price_sessions SET used_at = datetime('now') WHERE token = ?`).run(args.session_token)
   }
 
   const totalAmount = (product.price as number) * quantity
@@ -1398,6 +1499,7 @@ export async function startMCPServer() {
         case 'webaz_info':          result = handleInfo(); break
         case 'webaz_register':      result = handleRegister(args); break
         case 'webaz_search':        result = handleSearch(args); break
+        case 'webaz_verify_price':  result = handleVerifyPrice(args); break
         case 'webaz_list_product':  result = handleListProduct(args); break
         case 'webaz_place_order':   result = handlePlaceOrder(args); break
         case 'webaz_update_order':  result = handleUpdateOrder(args); break

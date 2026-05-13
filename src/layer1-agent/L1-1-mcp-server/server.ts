@@ -83,6 +83,23 @@ initNotificationSchema(db)
 initSkillSchema(db)
 initReputationSchema(db)
 
+// 结构化商品字段迁移（幂等）
+const MCP_PRODUCT_COLS = [
+  'ALTER TABLE products ADD COLUMN specs TEXT',
+  'ALTER TABLE products ADD COLUMN brand TEXT',
+  'ALTER TABLE products ADD COLUMN model TEXT',
+  'ALTER TABLE products ADD COLUMN source_url TEXT',
+  'ALTER TABLE products ADD COLUMN source_price REAL',
+  'ALTER TABLE products ADD COLUMN ship_regions TEXT DEFAULT "全国"',
+  'ALTER TABLE products ADD COLUMN handling_hours INTEGER DEFAULT 24',
+  'ALTER TABLE products ADD COLUMN estimated_days TEXT',
+  'ALTER TABLE products ADD COLUMN fragile INTEGER DEFAULT 0',
+  'ALTER TABLE products ADD COLUMN return_days INTEGER DEFAULT 7',
+  'ALTER TABLE products ADD COLUMN return_condition TEXT',
+  'ALTER TABLE products ADD COLUMN warranty_days INTEGER DEFAULT 0',
+]
+for (const sql of MCP_PRODUCT_COLS) { try { db.exec(sql) } catch {} }
+
 // ─── 工具定义（Agent 读这些来理解如何使用协议）────────────────
 
 const TOOLS = [
@@ -130,13 +147,16 @@ const TOOLS = [
     name: 'webaz_search',
     description: `搜索 WebAZ中的在售商品。
 无需登录即可搜索，买家或 Agent 可以自由浏览。
-返回匹配的商品列表，包含价格、卖家信息、库存数量。`,
+返回匹配的商品列表，包含价格、结构化规格（specs）、物流信息、售后政策、agent_summary。
+agent_summary 是一句话决策摘要，Agent 可直接用于比价决策。`,
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: '搜索关键词（商品名称或描述）' },
         category: { type: 'string', description: '商品分类过滤（可选）' },
         max_price: { type: 'number', description: '最高价格过滤（可选）' },
+        min_return_days: { type: 'number', description: '最少退货天数（可选，如 7 表示只看支持7天退货的商品）' },
+        max_handling_hours: { type: 'number', description: '最长发货时效小时数（可选，如 24 表示只看24h内发货的）' },
         limit: { type: 'number', description: '返回数量上限，默认 10' },
       },
     },
@@ -146,7 +166,10 @@ const TOOLS = [
     description: `卖家上架新商品到 WebAZ。
 需要卖家角色的 api_key。
 上架时系统会自动计算建议质押金额（商品价格的 15%），用于保障买家权益。
-商品上架后买家可以搜索到并下单。`,
+商品上架后买家可以搜索到并下单。
+
+填得越完整，agent_summary 越能帮买家 Agent 做比价决策（品牌/型号/退货/发货时效/质保等）。
+注意：如需价格对标外部链接（独家价/补贴模式），请通过 PWA Web 端上架——链接认领需要走众包验证流程。`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -156,6 +179,26 @@ const TOOLS = [
         price: { type: 'number', description: '商品价格（WAZ）' },
         stock: { type: 'number', description: '库存数量，默认 1' },
         category: { type: 'string', description: '商品分类（可选）' },
+        specs: {
+          type: 'object',
+          description: '结构化规格键值对，如 {"颜色":"黑色","内存":"16GB","存储":"512GB"}（可选）',
+        },
+        brand: { type: 'string', description: '品牌（可选）' },
+        model: { type: 'string', description: '型号（可选）' },
+        source_price: {
+          type: 'number',
+          description: '同款商品的外部参考价（可选，仅作展示，不参与独家价认证——需通过 PWA 完成链接认领）',
+        },
+        ship_regions: { type: 'string', description: '发货地区，默认"全国"' },
+        handling_hours: { type: 'number', description: '发货时效（小时），默认 24' },
+        estimated_days: {
+          type: 'object',
+          description: '预计送达天数：数字（如 4）或区域映射（如 {"江浙沪":2,"全国":4}）',
+        },
+        fragile: { type: 'boolean', description: '是否易碎品，默认 false' },
+        return_days: { type: 'number', description: '支持退货天数，默认 7（填 0 表示不支持退货）' },
+        return_condition: { type: 'string', description: '退货条件说明（可选）' },
+        warranty_days: { type: 'number', description: '质保天数，默认 0' },
       },
       required: ['api_key', 'title', 'description', 'price'],
     },
@@ -460,10 +503,35 @@ function handleRegister(args: Record<string, unknown>) {
   }
 }
 
+function buildAgentSummary(p: Record<string, unknown>): string {
+  const parts: string[] = []
+  if (p.brand) parts.push(String(p.brand))
+  if (p.model) parts.push(String(p.model))
+  const returnDays = p.return_days != null ? Number(p.return_days) : null
+  if (returnDays != null && returnDays > 0) parts.push(`${returnDays}天退货`)
+  else if (returnDays === 0)               parts.push('不支持退货')
+  const warranty = p.warranty_days != null ? Number(p.warranty_days) : null
+  if (warranty && warranty > 0)            parts.push(`${warranty}天质保`)
+  const handling = p.handling_hours != null ? Number(p.handling_hours) : null
+  if (handling != null)                    parts.push(`${handling}h发货`)
+  if (p.fragile)                           parts.push('易碎品')
+  return parts.join('，') || '暂无物流信息'
+}
+
+function parseProductForAgent(p: Record<string, unknown>) {
+  let specs: Record<string, string> | null = null
+  if (p.specs) { try { specs = JSON.parse(p.specs as string) } catch {} }
+  let estimated_days: Record<string, number> | number | null = null
+  if (p.estimated_days) { try { estimated_days = JSON.parse(p.estimated_days as string) } catch { estimated_days = null } }
+  return { ...p, specs, estimated_days, agent_summary: buildAgentSummary(p) }
+}
+
 function handleSearch(args: Record<string, unknown>) {
   const query = (args.query as string) ?? ''
   const category = args.category as string | undefined
   const maxPrice = args.max_price as number | undefined
+  const minReturnDays = args.min_return_days as number | undefined
+  const maxHandlingHours = args.max_handling_hours as number | undefined
   const limit = (args.limit as number) ?? 10
 
   let sql = `
@@ -474,18 +542,11 @@ function handleSearch(args: Record<string, unknown>) {
   `
   const params: unknown[] = []
 
-  if (query) {
-    sql += ` AND (p.title LIKE ? OR p.description LIKE ?)`
-    params.push(`%${query}%`, `%${query}%`)
-  }
-  if (category) {
-    sql += ` AND p.category = ?`
-    params.push(category)
-  }
-  if (maxPrice !== undefined) {
-    sql += ` AND p.price <= ?`
-    params.push(maxPrice)
-  }
+  if (query) { sql += ` AND (p.title LIKE ? OR p.description LIKE ?)`; params.push(`%${query}%`, `%${query}%`) }
+  if (category) { sql += ` AND p.category = ?`; params.push(category) }
+  if (maxPrice !== undefined) { sql += ` AND p.price <= ?`; params.push(maxPrice) }
+  if (minReturnDays !== undefined) { sql += ` AND p.return_days >= ?`; params.push(minReturnDays) }
+  if (maxHandlingHours !== undefined) { sql += ` AND p.handling_hours <= ?`; params.push(maxHandlingHours) }
   sql += ` ORDER BY p.created_at DESC LIMIT ?`
   params.push(limit)
 
@@ -495,7 +556,6 @@ function handleSearch(args: Record<string, unknown>) {
     return { found: 0, message: '没有找到匹配的商品', products: [] }
   }
 
-  // 按声誉权重排序：先排原始排序，再按卖家声誉加权
   type SortedProduct = Record<string, unknown> & { _boost: number; _rep_level: string; _rep_points: number }
   const sorted = products
     .map((p) => {
@@ -510,16 +570,32 @@ function handleSearch(args: Record<string, unknown>) {
     products: sorted.map((p) => {
       const levelMeta = { new:'', trusted:'⭐', quality:'🌟', star:'💫', legend:'🔥' }
       const badge = levelMeta[p._rep_level as keyof typeof levelMeta] ?? ''
+      const parsed = parseProductForAgent(p)
       return {
         id: p.id,
         title: p.title,
-        description: p.description,
-        price: `${p.price} WAZ`,
+        price: p.price,
+        price_display: `${p.price} WAZ`,
         stock: p.stock,
         category: p.category,
+        specs: parsed.specs,
+        agent_summary: parsed.agent_summary,
+        logistics: {
+          handling_hours: p.handling_hours ?? 24,
+          estimated_days: parsed.estimated_days,
+          ship_regions: p.ship_regions ?? '全国',
+          fragile: !!p.fragile,
+        },
+        after_sales: {
+          return_days: p.return_days ?? 7,
+          return_condition: p.return_condition ?? '',
+          warranty_days: p.warranty_days ?? 0,
+        },
         seller: badge ? `${badge} ${p.seller_name}` : p.seller_name,
         seller_id: p.seller_id,
-        seller_reputation: p._rep_level !== 'new' ? `${badge} ${['','可信','优质','明星','传奇'][['new','trusted','quality','star','legend'].indexOf(p._rep_level)]}（${p._rep_points}分）` : undefined,
+        seller_reputation: p._rep_level !== 'new'
+          ? `${badge} ${['','可信','优质','明星','传奇'][['new','trusted','quality','star','legend'].indexOf(p._rep_level)]}（${p._rep_points}分）`
+          : undefined,
       }
     }),
   }
@@ -551,9 +627,21 @@ function handleListProduct(args: Record<string, unknown>) {
   }
 
   const id = generateId('prd')
+
+  const specsJson = args.specs != null
+    ? (typeof args.specs === 'string' ? args.specs : JSON.stringify(args.specs))
+    : null
+  const estJson = args.estimated_days != null
+    ? (typeof args.estimated_days === 'string' ? args.estimated_days : JSON.stringify(args.estimated_days))
+    : null
+
   db.prepare(`
-    INSERT INTO products (id, seller_id, title, description, price, stock, category, stake_amount)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO products (
+      id, seller_id, title, description, price, stock, category, stake_amount,
+      specs, brand, model, source_price,
+      ship_regions, handling_hours, estimated_days, fragile,
+      return_days, return_condition, warranty_days
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?)
   `).run(
     id,
     user.id,
@@ -562,7 +650,18 @@ function handleListProduct(args: Record<string, unknown>) {
     price,
     (args.stock as number) ?? 1,
     (args.category as string) ?? null,
-    stakeAmount
+    stakeAmount,
+    specsJson,
+    (args.brand as string) ?? null,
+    (args.model as string) ?? null,
+    args.source_price != null ? Number(args.source_price) : null,
+    (args.ship_regions as string) ?? '全国',
+    args.handling_hours != null ? Number(args.handling_hours) : 24,
+    estJson,
+    args.fragile ? 1 : 0,
+    args.return_days != null ? Number(args.return_days) : 7,
+    (args.return_condition as string) ?? '',
+    args.warranty_days != null ? Number(args.warranty_days) : 0,
   )
 
   // 扣除质押金额

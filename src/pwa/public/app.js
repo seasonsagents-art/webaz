@@ -39,7 +39,6 @@ function route() {
   render(page || 'shop', params)
 }
 
-window.addEventListener('hashchange', route)
 window.addEventListener('popstate', route)
 
 function navigate(hash) { location.hash = hash }
@@ -76,7 +75,12 @@ async function render(page, params) {
       if (state.user?.role === 'logistics')  return renderLogistics(app)
       if (state.user?.role === 'arbitrator') return renderDisputeList(app)
       return renderSeller(app)
+    case 'edit-product':  return renderEditProduct(app, params[0])
     case 'wallet':        return renderWallet(app)
+    case 'agent-buy':     return renderAgentBuy(app)
+    case 'verify-tasks':  return renderVerifyTasks(app)
+    case 'verify-admin':  return renderVerifyAdmin(app)
+    case 'claim-url':     return renderClaimUrl(app, params[0])
     case 'notifications': return renderNotifications(app)
     case 'skills':        return renderSkills(app)
     case 'disputes':      return renderDisputeList(app)
@@ -110,6 +114,10 @@ function statusBadge(status) {
   return `<span class="badge badge-${color}">${label}</span>`
 }
 
+function escHtml(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')
+}
+
 function fmtTime(iso) {
   if (!iso) return ''
   const locale = window._lang === 'en' ? 'en-US' : 'zh-CN'
@@ -118,6 +126,24 @@ function fmtTime(iso) {
 
 function alert$(type, msg) {
   return `<div class="alert alert-${type}">${msg}</div>`
+}
+
+// 外部链接验证任务结果卡片（统一展示）
+function linkTaskCard(res) {
+  if (!res || (!res.task_id && !res.code)) return ''
+  const bg    = res.conflict ? '#fffbeb' : '#f0f9ff'
+  const border = res.conflict ? '#f59e0b' : '#60a5fa'
+  const icon  = res.conflict ? '⚠️' : '🔑'
+  const title = res.conflict ? t('链接冲突 — 需要认领验证') : t('链接验证任务已创建')
+  const alreadyNote = res.already_pending ? `<div style="font-size:11px;color:#f59e0b;margin-bottom:6px">${t('此链接已有进行中的任务')}</div>` : ''
+  return `
+    <div style="background:${bg};border:1px solid ${border};border-radius:8px;padding:12px;margin-top:8px;font-size:13px">
+      ${alreadyNote}
+      <div style="font-weight:600;margin-bottom:6px">${icon} ${title}</div>
+      <div style="margin-bottom:8px;color:#374151;line-height:1.5">${res.instructions || ''}</div>
+      <div style="background:#fff;border:2px dashed ${border};border-radius:6px;padding:8px;font-family:monospace;font-size:16px;font-weight:800;letter-spacing:3px;text-align:center;margin-bottom:8px;color:#1e40af">${res.code || ''}</div>
+      <div style="font-size:11px;color:#6b7280">${t('截止')} ${res.expires_at ? new Date(res.expires_at).toLocaleString() : ''} · <a href="#verify-tasks" style="color:#4f46e5">${t('查看任务进度')}</a></div>
+    </div>`
 }
 
 function loading$() {
@@ -256,7 +282,7 @@ async function renderProfile(app) {
         <p style="font-size:13px;color:#6b7280;margin-bottom:12px">${t('如果你遗失了 API Key，可以通过注册名称找回。')}</p>
         <div style="display:flex;gap:8px">
           <input class="form-control" id="recover-name" placeholder="${t('输入注册时的名称')}" style="flex:1">
-          <button class="btn btn-outline" onclick="recoverKey()">${t('找回')}</button>
+          <button class="btn btn-outline btn-sm" onclick="recoverKey()">${t('找回')}</button>
         </div>
         <div id="recover-result" style="margin-top:10px"></div>
       </div>
@@ -402,6 +428,7 @@ window.doLogin = async () => {
   if (user.error) { state.apiKey = null; return showMsg('error', t('无效的 api_key，请重新输入')) }
   state.user = user
   localStorage.setItem('webaz_key', key)
+  connectSSE()
   navigate(roleHome(user.role))
 }
 
@@ -413,8 +440,10 @@ window.doRegister = async () => {
   if (res.error) return showMsg('error', res.error)
   showMsg('success', `${t('注册成功！')}<br>${t('你的 api_key（请妥善保存，这是你的登录凭证）：')}<br><code style="font-size:12px;word-break:break-all">${res.api_key}</code>`)
   state.apiKey = res.api_key
-  state.user = { ...res }
+  // Normalize register response to match /me shape (user_id → id)
+  state.user = { ...res, id: res.user_id }
   localStorage.setItem('webaz_key', res.api_key)
+  connectSSE()
   setTimeout(() => navigate(roleHome(res.role)), 3000)
 }
 
@@ -443,14 +472,26 @@ async function renderShop(app) {
           </div>`).join('')}
        </div>`
 
+  const agentBuyBanner = state.user?.role === 'buyer' ? `
+    <div onclick="navigate('#agent-buy')" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);border-radius:12px;padding:14px 16px;margin-bottom:16px;cursor:pointer;display:flex;align-items:center;gap:12px">
+      <span style="font-size:28px">🤖</span>
+      <div>
+        <div style="color:#fff;font-weight:600;font-size:14px">${t('智能下单')}</div>
+        <div style="color:rgba(255,255,255,0.8);font-size:12px">${t('粘贴任意平台链接，AI 帮你找更优方案')}</div>
+      </div>
+      <span style="margin-left:auto;color:rgba(255,255,255,0.7);font-size:18px">›</span>
+    </div>` : ''
+
   app.innerHTML = shell(`
     <h1 class="page-title">${t('发现好物')}</h1>
+    ${agentBuyBanner}
     <div class="search-bar">
       <input class="search-input" id="search-inp" placeholder="${t('搜索商品...')}" onkeydown="if(event.key==='Enter')doSearch()">
       <button class="btn btn-primary btn-sm" style="width:auto;padding:10px 16px" onclick="doSearch()">${t('搜')}</button>
     </div>
-    <div style="margin-bottom:16px">
+    <div style="margin-bottom:16px;display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn btn-outline btn-sm" style="width:auto" onclick="navigate('#skills')">${t('⚡ Skill 市场')}</button>
+      <button class="btn btn-outline btn-sm" style="width:auto" onclick="navigate('#verify-tasks')">${t('🛡️ 验证任务')}</button>
     </div>
     <div id="product-list">${grid}</div>
   `, 'shop')
@@ -1414,6 +1455,29 @@ window.doLogisticsAction = async (orderId, action, needsEvidence) => {
   else { if (msgEl) msgEl.innerHTML = alert$('success', '操作成功！'); setTimeout(() => renderLogistics(document.getElementById('app')), 1000) }
 }
 
+// ─── 规格辅助函数 ─────────────────────────────────────────────
+// specs 存储格式：{ "颜色": "黑色", "尺码": "XL" }
+// 编辑框格式：每行 "key:value" 或 "key：value"
+
+function parseSpecs(text) {
+  if (!text || !text.trim()) return {}
+  const obj = {}
+  text.split('\n').forEach(line => {
+    const sep = line.indexOf('：') !== -1 ? '：' : ':'
+    const idx = line.indexOf(sep)
+    if (idx < 1) return
+    const k = line.slice(0, idx).trim()
+    const v = line.slice(idx + sep.length).trim()
+    if (k) obj[k] = v
+  })
+  return obj
+}
+
+function formatSpecs(specs) {
+  if (!specs || typeof specs !== 'object') return ''
+  return Object.entries(specs).map(([k, v]) => `${k}:${v}`).join('\n')
+}
+
 // ─── 卖家后台 ─────────────────────────────────────────────────
 
 async function renderSeller(app) {
@@ -1427,8 +1491,10 @@ async function renderSeller(app) {
   }
 
   app.innerHTML = shell(loading$(), 'seller')
-  const [products, orders, mySkillsRaw] = await Promise.all([GET('/my-products'), GET('/orders'), GET('/skills/mine')])
-  const mySkills = Array.isArray(mySkillsRaw) ? mySkillsRaw : []
+  const [productsRaw, ordersRaw, mySkillsRaw] = await Promise.all([GET('/my-products'), GET('/orders'), GET('/skills/mine')])
+  const mySkills   = Array.isArray(mySkillsRaw) ? mySkillsRaw : []
+  const orders     = Array.isArray(ordersRaw)   ? ordersRaw   : []
+  const products   = Array.isArray(productsRaw) ? productsRaw : []
 
   const pendingOrders = orders.filter(o => ['paid', 'accepted'].includes(o.status) && o.seller_id === state.user.id)
   const myProducts = products
@@ -1448,18 +1514,89 @@ async function renderSeller(app) {
         </div>
       </div>`).join('')
 
-  const productsHtml = myProducts.length === 0
-    ? `<div class="empty" style="padding:24px"><div class="empty-icon">📭</div><div class="empty-text">${t('还没有商品')}</div></div>`
-    : myProducts.map(p => `
-      <div class="card">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <div>
-            <div style="font-weight:600">${p.title}</div>
-            <div style="font-size:13px;color:#6b7280;margin-top:2px">${p.price} WAZ · ${t('库存')} ${p.stock}</div>
+  const activeProducts    = products.filter(p => p.status === 'active')
+  const warehouseProducts = products.filter(p => p.status !== 'active' && p.status !== 'deleted')
+  const deletedProducts   = products.filter(p => p.status === 'deleted')
+
+  function productLinksPanel(p) {
+    return `
+      <details style="margin-top:10px" onToggle="onLinksToggle(this,'${p.id}')">
+        <summary style="font-size:12px;color:#6366f1;cursor:pointer;list-style:none">🔗 ${t('外部链接')} <span id="lnk-count-${p.id}"></span></summary>
+        <div id="lnk-panel-${p.id}" style="margin-top:10px">
+          <div style="font-size:12px;color:#9ca3af;margin-bottom:6px">${t('买家粘贴这些链接时，智能下单会直接匹配到你的商品')}</div>
+          <div id="lnk-list-${p.id}">${loading$()}</div>
+          <div style="display:flex;gap:6px;margin-top:8px">
+            <input class="form-control" id="lnk-inp-${p.id}" placeholder="${t('粘贴外部链接（需验证）')}" style="font-size:12px;flex:1">
+            <button class="btn btn-outline btn-sm" style="width:auto" onclick="doAddLink('${p.id}')">${t('添加')}</button>
           </div>
-          <span class="badge badge-${p.status === 'active' ? 'green' : 'gray'}">${p.status === 'active' ? t('在售') : t('已下架')}</span>
+          <div id="lnk-msg-${p.id}"></div>
         </div>
-      </div>`).join('')
+      </details>`
+  }
+
+  function activeCard(p) {
+    return `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600">${escHtml(p.title)}</div>
+          <div style="font-size:13px;color:#6b7280;margin-top:2px">${p.price} WAZ · ${t('库存')} ${p.stock}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end">
+          <span class="badge badge-green">${t('在售')}</span>
+          <button class="btn btn-outline btn-sm" onclick="navigate('#edit-product/${p.id}')">${t('编辑')}</button>
+          <button class="btn btn-gray btn-sm" onclick="setProductStatus('${p.id}','warehouse')">${t('下架')}</button>
+        </div>
+      </div>
+      ${productLinksPanel(p)}
+    </div>`
+  }
+
+  function warehouseCard(p) {
+    const canList = !p.has_pending_task && !p.all_links_revoked
+    const listBtn = canList
+      ? `<button class="btn btn-primary btn-sm" onclick="setProductStatus('${p.id}','active')">${t('上架')}</button>`
+      : `<button class="btn btn-sm" disabled title="${p.has_pending_task ? t('链接核验中，请等待验证结果') : t('所有链接已失效，请先添加新链接')}" style="opacity:0.45;cursor:not-allowed;background:#e5e7eb;color:#9ca3af;width:auto">
+           ${p.has_pending_task ? t('核验中') : t('链接失效')}
+         </button>`
+    return `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600">${escHtml(p.title)}</div>
+          <div style="font-size:13px;color:#6b7280;margin-top:2px">${p.price} WAZ · ${t('库存')} ${p.stock}</div>
+          ${p.has_pending_task ? `<div style="font-size:11px;color:#d97706;margin-top:2px">⏳ ${t('链接核验中，请等待验证结果')}</div>` : ''}
+          ${p.all_links_revoked ? `<div style="font-size:11px;color:#ef4444;margin-top:2px">❌ ${t('所有链接已失效，请先添加新链接')}</div>` : ''}
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end">
+          <span class="badge badge-gray">${t('仓库')}</span>
+          ${listBtn}
+          <button class="btn btn-outline btn-sm" onclick="navigate('#edit-product/${p.id}')">${t('编辑')}</button>
+          <button class="btn btn-sm" style="background:#fee2e2;color:#991b1b" onclick="setProductStatus('${p.id}','deleted')">${t('移入回收箱')}</button>
+        </div>
+      </div>
+      ${productLinksPanel(p)}
+    </div>`
+  }
+
+  function deletedCard(p) {
+    return `<div class="card" style="opacity:0.75;border:1px dashed #fca5a5">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;text-decoration:line-through;color:#9ca3af">${escHtml(p.title)}</div>
+          <div style="font-size:13px;color:#d1d5db;margin-top:2px">${p.price} WAZ</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end">
+          <span class="badge badge-red">${t('回收箱')}</span>
+          <button class="btn btn-outline btn-sm" onclick="setProductStatus('${p.id}','warehouse')">${t('恢复到仓库')}</button>
+          <button class="btn btn-sm" style="background:#dc2626;color:#fff" onclick="deleteProductPermanently('${p.id}')">${t('彻底删除')}</button>
+        </div>
+      </div>
+    </div>`
+  }
+
+  const emptyHtml = `<div class="empty" style="padding:24px"><div class="empty-icon">📭</div><div class="empty-text">${t('暂无商品')}</div></div>`
+  const activeHtml    = activeProducts.length    ? activeProducts.map(activeCard).join('')       : emptyHtml
+  const warehouseHtml = warehouseProducts.length ? warehouseProducts.map(warehouseCard).join('') : emptyHtml
+  const deletedHtml   = deletedProducts.length   ? deletedProducts.map(deletedCard).join('')     : emptyHtml
 
   app.innerHTML = shell(`
     <h1 class="page-title">${t('卖家后台')}</h1>
@@ -1474,13 +1611,34 @@ async function renderSeller(app) {
     <div class="divider"></div>
 
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <div style="font-weight:700">${t('我的商品')}</div>
+      <div style="font-weight:700">${t('商品管理')}</div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-outline btn-sm" onclick="showImportProduct()">🔗 ${t('导入')}</button>
         <button class="btn btn-primary btn-sm" onclick="showAddProduct()">${t('+ 上架')}</button>
       </div>
     </div>
-    ${productsHtml}
+
+    <!-- 商品分类标签页 -->
+    <div style="display:flex;gap:6px;margin-bottom:12px">
+      <button class="prd-tab-btn" data-tab="active"
+        onclick="switchProductTab('active')"
+        style="flex:1;padding:8px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;border:1.5px solid #3b82f6;background:#eff6ff;color:#1d4ed8">
+        ${t('在售')} <span style="font-size:11px;font-weight:400">(${activeProducts.length})</span>
+      </button>
+      <button class="prd-tab-btn" data-tab="warehouse"
+        onclick="switchProductTab('warehouse')"
+        style="flex:1;padding:8px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;border:1.5px solid #e5e7eb;background:#f9fafb;color:#374151">
+        ${t('仓库')} <span style="font-size:11px;font-weight:400">(${warehouseProducts.length})</span>
+      </button>
+      <button class="prd-tab-btn" data-tab="deleted"
+        onclick="switchProductTab('deleted')"
+        style="flex:1;padding:8px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;border:1.5px solid #e5e7eb;background:#f9fafb;color:#374151">
+        ${t('回收箱')} <span style="font-size:11px;font-weight:400">(${deletedProducts.length})</span>
+      </button>
+    </div>
+    <div id="prd-tab-active">${activeHtml}</div>
+    <div id="prd-tab-warehouse" style="display:none">${warehouseHtml}</div>
+    <div id="prd-tab-deleted" style="display:none">${deletedHtml}</div>
 
     <!-- 一键导入面板 -->
     <div id="import-product-form" style="display:none">
@@ -1510,25 +1668,29 @@ async function renderSeller(app) {
           <div class="divider"></div>
           <div style="font-size:13px;font-weight:600;color:#4f46e5;margin-bottom:12px">✅ ${t('解析完成，确认后上架')}</div>
           <div class="form-group"><label class="form-label">${t('商品名称')}</label><input class="form-control" id="imp-title"></div>
-          <div class="form-group"><label class="form-label">${t('商品描述')}</label><textarea class="form-control" id="imp-desc" rows="4"></textarea></div>
+          <div class="form-group"><label class="form-label">${t('商品描述')}</label><textarea class="form-control" id="imp-desc" rows="3"></textarea></div>
+          <div class="form-group"><label class="form-label">${t('规格参数')}<span style="font-size:11px;color:#9ca3af;font-weight:400;margin-left:6px">${t('每行：材质: 陶瓷')}</span></label>
+            <textarea class="form-control" id="imp-specs" rows="3"></textarea></div>
           <div style="display:flex;gap:12px">
-            <div class="form-group" style="flex:1">
-              <label class="form-label">${t('价格（WAZ）')}</label>
-              <input class="form-control" id="imp-price" type="number">
-            </div>
-            <div class="form-group" style="flex:1">
-              <label class="form-label">${t('库存数量')}</label>
-              <input class="form-control" id="imp-stock" type="number" value="1">
-            </div>
+            <div class="form-group" style="flex:1"><label class="form-label">${t('价格（WAZ）')}</label><input class="form-control" id="imp-price" type="number"></div>
+            <div class="form-group" style="flex:1"><label class="form-label">${t('库存')}</label><input class="form-control" id="imp-stock" type="number" value="1"></div>
           </div>
           <div id="imp-price-hint" style="font-size:12px;color:#059669;margin:-8px 0 12px;padding:8px 12px;background:#f0fdf4;border-radius:6px;display:none"></div>
-          <div class="form-group"><label class="form-label">${t('分类（可选）')}</label>
-            <select class="form-control" id="imp-cat">
-              <option value="">${t('不分类')}</option>
-              <option value="茶具">${t('茶具')}</option><option value="家居">${t('家居')}</option>
-              <option value="食品">${t('食品')}</option><option value="服装">${t('服装')}</option>
-              <option value="手工">${t('手工')}</option><option value="电子">${t('电子')}</option>
-            </select>
+          <div style="display:flex;gap:12px">
+            <div class="form-group" style="flex:1"><label class="form-label">${t('分类')}</label>
+              <select class="form-control" id="imp-cat">
+                <option value="">${t('不分类')}</option>
+                <option value="茶具">${t('茶具')}</option><option value="家居">${t('家居')}</option>
+                <option value="食品">${t('食品')}</option><option value="服装">${t('服装')}</option>
+                <option value="手工">${t('手工')}</option><option value="电子">${t('电子')}</option>
+              </select>
+            </div>
+            <div class="form-group" style="flex:1"><label class="form-label">${t('备货时间（小时）')}</label>
+              <input class="form-control" id="imp-handling" type="number" value="24"></div>
+          </div>
+          <div style="display:flex;gap:12px">
+            <div class="form-group" style="flex:1"><label class="form-label">${t('退货天数')}</label><input class="form-control" id="imp-return" type="number" value="7"></div>
+            <div class="form-group" style="flex:1"><label class="form-label">${t('质保天数')}</label><input class="form-control" id="imp-warranty" type="number" value="0"></div>
           </div>
           <div class="btn-row">
             <button class="btn btn-gray" onclick="hideImportProduct()">${t('取消')}</button>
@@ -1543,18 +1705,51 @@ async function renderSeller(app) {
       <div class="card">
         <div style="font-weight:700;margin-bottom:16px">${t('上架新商品')}</div>
         <div id="add-msg"></div>
-        <div class="form-group"><label class="form-label">${t('商品名称')}</label><input class="form-control" id="prd-title" placeholder="例：手工竹编收纳篮"></div>
-        <div class="form-group"><label class="form-label">${t('商品描述')}</label><textarea class="form-control" id="prd-desc" placeholder="材质、尺寸、特点..."></textarea></div>
-        <div class="form-group"><label class="form-label">${t('价格（WAZ）')}</label><input class="form-control" id="prd-price" type="number" placeholder="199"></div>
-        <div class="form-group"><label class="form-label">${t('库存数量')}</label><input class="form-control" id="prd-stock" type="number" value="10"></div>
-        <div class="form-group"><label class="form-label">${t('分类（可选）')}</label>
-          <select class="form-control" id="prd-cat">
-            <option value="">${t('不分类')}</option>
-            <option value="茶具">${t('茶具')}</option><option value="家居">${t('家居')}</option>
-            <option value="食品">${t('食品')}</option><option value="服装">${t('服装')}</option>
-            <option value="手工">${t('手工')}</option><option value="电子">${t('电子')}</option>
-          </select>
+
+        <div class="form-group"><label class="form-label">${t('商品名称')} *</label><input class="form-control" id="prd-title" placeholder="${t('例：手工竹编收纳篮')}"></div>
+        <div class="form-group"><label class="form-label">${t('商品描述')} *<span style="font-size:11px;color:#9ca3af;font-weight:400;margin-left:6px">${t('面向 Agent 检索，写核心参数而非营销语言')}</span></label>
+          <textarea class="form-control" id="prd-desc" rows="3" placeholder="${t('材质、尺寸、颜色、适用场景...')}"></textarea></div>
+        <div style="display:flex;gap:12px">
+          <div class="form-group" style="flex:1"><label class="form-label">${t('价格（WAZ）')} *</label><input class="form-control" id="prd-price" type="number" placeholder="199"></div>
+          <div class="form-group" style="flex:1"><label class="form-label">${t('库存')}</label><input class="form-control" id="prd-stock" type="number" value="1"></div>
         </div>
+
+        <div class="form-group"><label class="form-label">${t('规格参数')}<span style="font-size:11px;color:#9ca3af;font-weight:400;margin-left:6px">${t('每行一个，格式：材质: 陶瓷')}</span></label>
+          <textarea class="form-control" id="prd-specs" rows="3" placeholder="材质: 陶瓷&#10;容量: 350ml&#10;颜色: 白色"></textarea></div>
+
+        <div style="display:flex;gap:12px">
+          <div class="form-group" style="flex:1"><label class="form-label">${t('分类')}</label>
+            <select class="form-control" id="prd-cat">
+              <option value="">${t('不分类')}</option>
+              <option value="茶具">${t('茶具')}</option><option value="家居">${t('家居')}</option>
+              <option value="食品">${t('食品')}</option><option value="服装">${t('服装')}</option>
+              <option value="手工">${t('手工')}</option><option value="电子">${t('电子')}</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex:1"><label class="form-label">${t('备货时间（小时）')}</label>
+            <input class="form-control" id="prd-handling" type="number" value="24" min="1"></div>
+        </div>
+
+        <details style="margin-bottom:16px">
+          <summary style="font-size:13px;color:#6b7280;cursor:pointer;padding:4px 0">${t('售后与物流（填写越完整，Agent 越优先选择你）')}</summary>
+          <div style="margin-top:12px;display:flex;gap:12px">
+            <div class="form-group" style="flex:1"><label class="form-label">${t('退货天数')}</label>
+              <input class="form-control" id="prd-return" type="number" value="7" min="0"></div>
+            <div class="form-group" style="flex:1"><label class="form-label">${t('质保天数')}</label>
+              <input class="form-control" id="prd-warranty" type="number" value="0" min="0"></div>
+          </div>
+          <div class="form-group"><label class="form-label">${t('退货条件')}</label>
+            <input class="form-control" id="prd-return-cond" placeholder="${t('例：未拆封 / 任意原因 / 质量问题')}"></div>
+          <div class="form-group"><label class="form-label">${t('配送范围')}</label>
+            <input class="form-control" id="prd-ship-regions" value="${t('全国')}" placeholder="${t('全国 / 华东华南 / 不支持偏远地区')}"></div>
+          <div class="form-group"><label class="form-label">${t('预计时效')}<span style="font-size:11px;color:#9ca3af;font-weight:400;margin-left:6px">${t('每行：地区: 天数')}</span></label>
+            <textarea class="form-control" id="prd-est-days" rows="2" placeholder="华东: 2&#10;全国: 5"></textarea></div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+            <input type="checkbox" id="prd-fragile" style="width:16px;height:16px">
+            <label for="prd-fragile" style="font-size:13px">${t('易碎品，需特殊包装')}</label>
+          </div>
+        </details>
+
         <div class="btn-row">
           <button class="btn btn-gray" onclick="hideAddProduct()">${t('取消')}</button>
           <button class="btn btn-primary" onclick="doAddProduct()">${t('上架')}</button>
@@ -1599,6 +1794,36 @@ async function renderSeller(app) {
 window.showAddProduct = () => { document.getElementById('add-product-form').style.display = '' }
 window.hideAddProduct = () => { document.getElementById('add-product-form').style.display = 'none' }
 
+window.switchProductTab = (tab) => {
+  ['active', 'warehouse', 'deleted'].forEach(k => {
+    const panel = document.getElementById(`prd-tab-${k}`)
+    if (panel) panel.style.display = k === tab ? '' : 'none'
+  })
+  document.querySelectorAll('.prd-tab-btn').forEach(btn => {
+    const isActive = btn.dataset.tab === tab
+    btn.style.background     = isActive ? '#eff6ff' : '#f9fafb'
+    btn.style.color          = isActive ? '#1d4ed8' : '#374151'
+    btn.style.borderColor    = isActive ? '#3b82f6' : '#e5e7eb'
+  })
+}
+
+window.setProductStatus = async (id, status) => {
+  let confirmMsg = ''
+  if (status === 'deleted')   confirmMsg = t('确认移入回收箱？移入后商品将下架，可随时恢复。')
+  if (status === 'warehouse') confirmMsg = t('确认下架到仓库？买家将无法购买。')
+  if (confirmMsg && !confirm(confirmMsg)) return
+  const res = await api('PATCH', `/products/${id}/status`, { status })
+  if (res.error) return void alert(res.error)
+  renderSeller(document.getElementById('app'))
+}
+
+window.deleteProductPermanently = async (id) => {
+  if (!confirm(t('彻底删除后无法恢复，确认删除？'))) return
+  const res = await api('DELETE', `/products/${id}`)
+  if (res.error) return void alert(res.error)
+  renderSeller(document.getElementById('app'))
+}
+
 window.showImportProduct = () => {
   document.getElementById('import-product-form').style.display = ''
   document.getElementById('import-preview').style.display = 'none'
@@ -1631,6 +1856,19 @@ window.doImportProduct = async () => {
     quotaEl.style.color = '#059669'
   }
 
+  if (res.conflict) {
+    // 链接已被他人认领 → 跳转认领流程
+    msgEl.innerHTML = `
+      <div style="padding:12px;background:#fffbeb;border:1px solid #f59e0b;border-radius:8px;font-size:13px;line-height:1.6">
+        ⚠️ <strong>${t('此链接已被其他商家认领上架')}</strong><br>
+        <span style="color:#6b7280">${t('如需认领归属，可发起链接认领验证任务，经众包验证通过后链接归属转移到您的商品。')}</span>
+        <div style="margin-top:10px;display:flex;gap:8px">
+          <button class="btn btn-primary btn-sm" style="width:auto" onclick="navigate('#claim-url/${encodeURIComponent(res.url)}')">${t('发起认领认证 →')}</button>
+          <button class="btn btn-outline btn-sm" style="width:auto" onclick="document.getElementById('import-url').value=''">${t('换一个链接')}</button>
+        </div>
+      </div>`
+    return
+  }
   if (res.error) {
     if (res.quota_exceeded) {
       msgEl.innerHTML = alert$('error', res.error)
@@ -1651,23 +1889,28 @@ window.doImportProduct = async () => {
       `<div style="margin-top:8px"><button class="btn btn-outline btn-sm" onclick="hideImportProduct();showAddProduct()">${t('改用手动上架')}</button></div>`
     return
   }
+
   document.getElementById('imp-title').value = titleVal
   document.getElementById('imp-desc').value = res.description || ''
+  document.getElementById('imp-specs').value = formatSpecs(res.specs)
   document.getElementById('imp-price').value = res.suggested_price || ''
   document.getElementById('imp-stock').value = res.stock || 1
-  const catEl = document.getElementById('imp-cat')
-  if (res.category) {
-    const opt = [...catEl.options].find(o => o.value === res.category)
-    if (opt) catEl.value = res.category
-  }
+  document.getElementById('imp-handling').value = res.handling_hours || 24
+  document.getElementById('imp-return').value = res.return_days ?? 7
+  document.getElementById('imp-warranty').value = res.warranty_days ?? 0
 
-  // 显示定价建议
+  const catEl = document.getElementById('imp-cat')
+  if (res.category) { const opt = [...catEl.options].find(o => o.value === res.category); if (opt) catEl.value = res.category }
+
+  // 定价建议 + 来源价格对比
   const hintEl = document.getElementById('imp-price-hint')
   if (res.price_reasoning) {
     hintEl.textContent = `💡 ${res.price_reasoning}${res.original_price ? `（${t('原价参考')}：${res.original_price} CNY）` : ''}`
     hintEl.style.display = ''
   }
 
+  // 暂存来源信息供上架时使用
+  window._importMeta = { source_url: res.source_url, source_price: res.source_price }
   document.getElementById('import-preview').style.display = ''
 }
 
@@ -1681,28 +1924,113 @@ window.doPublishImported = async () => {
 
   if (!title || !desc || !price) return void (msgEl.innerHTML = alert$('error', t('请填写商品名、描述、价格')))
 
-  const res = await POST('/products', { title, description: desc, price, stock, category })
+  const payload = {
+    title, description: desc, price, stock, category,
+    specs: parseSpecs(document.getElementById('imp-specs').value),
+    handling_hours: Number(document.getElementById('imp-handling').value) || 24,
+    return_days: Number(document.getElementById('imp-return').value) ?? 7,
+    warranty_days: Number(document.getElementById('imp-warranty').value) ?? 0,
+    ...(window._importMeta || {}),
+  }
+  const res = await POST('/products', payload)
   if (res.error) return void (msgEl.innerHTML = alert$('error', res.error))
+
+  const successBase = alert$('success', `${t('上架成功！质押')} ${res.stake_locked} WAZ ${t('已锁定')}`)
+  let extra = ''
+  window._importMeta = null
+  if (res.link_conflict) {
+    // 有冲突：跳转到商品编辑页，在那里完成验证码确认操作
+    msgEl.innerHTML = alert$('success', t('商品已进入仓库，需完成链接验证后才能上架'))
+    setTimeout(() => navigate(`#edit-product/${res.product_id}`), 1200)
+  } else {
+    msgEl.innerHTML = successBase
+    setTimeout(() => renderSeller(document.getElementById('app')), 1500)
+  }
+}
+
+window.doAddProduct = async () => {
+  const title    = document.getElementById('prd-title').value.trim()
+  const desc     = document.getElementById('prd-desc').value.trim()
+  const price    = Number(document.getElementById('prd-price').value)
+  const stock    = Number(document.getElementById('prd-stock').value) || 1
+  const category = document.getElementById('prd-cat').value
+  const msgEl    = document.getElementById('add-msg')
+
+  if (!title || !desc || !price) { msgEl.innerHTML = alert$('error', t('请填写商品名、描述、价格')); return }
+
+  const payload = {
+    title, description: desc, price, stock, category,
+    specs: parseSpecs(document.getElementById('prd-specs').value),
+    handling_hours: Number(document.getElementById('prd-handling').value) || 24,
+    ship_regions: document.getElementById('prd-ship-regions').value.trim() || '全国',
+    estimated_days: parseSpecs(document.getElementById('prd-est-days').value),
+    return_days: Number(document.getElementById('prd-return').value) ?? 7,
+    return_condition: document.getElementById('prd-return-cond').value.trim(),
+    warranty_days: Number(document.getElementById('prd-warranty').value) ?? 0,
+    fragile: document.getElementById('prd-fragile').checked ? 1 : 0,
+  }
+  const res = await POST('/products', payload)
+  if (res.error) { msgEl.innerHTML = alert$('error', res.error); return }
 
   msgEl.innerHTML = alert$('success', `${t('上架成功！质押')} ${res.stake_locked} WAZ ${t('已锁定')}`)
   setTimeout(() => renderSeller(document.getElementById('app')), 1500)
 }
 
-window.doAddProduct = async () => {
-  const title = document.getElementById('prd-title').value.trim()
-  const desc  = document.getElementById('prd-desc').value.trim()
-  const price = Number(document.getElementById('prd-price').value)
-  const stock = Number(document.getElementById('prd-stock').value) || 1
-  const category = document.getElementById('prd-cat').value
-  const msgEl = document.getElementById('add-msg')
+// ─── 外部链接管理 ─────────────────────────────────────────────
 
-  if (!title || !desc || !price) { msgEl.innerHTML = alert$('error', '请填写商品名、描述、价格'); return }
+window.onLinksToggle = async (details, productId) => {
+  if (!details.open) return
+  const listEl = document.getElementById(`lnk-list-${productId}`)
+  if (!listEl || listEl.dataset.loaded) return
+  listEl.dataset.loaded = '1'
+  await refreshLinks(productId)
+}
 
-  const res = await POST('/products', { title, description: desc, price, stock, category })
-  if (res.error) { msgEl.innerHTML = alert$('error', res.error); return }
+async function refreshLinks(productId) {
+  const listEl = document.getElementById(`lnk-list-${productId}`)
+  const countEl = document.getElementById(`lnk-count-${productId}`)
+  if (!listEl) return
+  const links = await GET(`/products/${productId}/links`)
+  if (links.error) { listEl.innerHTML = alert$('error', links.error); return }
+  if (countEl) countEl.textContent = links.length > 0 ? `(${links.length})` : ''
+  if (links.length === 0) {
+    listEl.innerHTML = `<div style="font-size:12px;color:#9ca3af">${t('暂无外部链接')}</div>`
+    return
+  }
+  listEl.innerHTML = links.map(lk => `
+    <div style="display:flex;align-items:flex-start;gap:6px;margin-bottom:6px;font-size:12px">
+      <span style="margin-top:1px">${lk.verified ? '✅' : '⏳'}</span>
+      <div style="flex:1;min-width:0">
+        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#374151">${lk.url}</div>
+        ${lk.verify_note ? `<div style="color:#9ca3af">${lk.verify_note}</div>` : ''}
+        <div style="color:#9ca3af">${lk.source === 'import' ? t('导入时自动保存') : t('手动添加')}</div>
+      </div>
+      <button onclick="doDeleteLink('${productId}','${lk.id}')" style="background:none;border:none;color:#dc2626;cursor:pointer;font-size:14px;padding:0;flex-shrink:0">×</button>
+    </div>`).join('')
+}
 
-  msgEl.innerHTML = alert$('success', `上架成功！质押 ${res.stake_locked} WAZ 已锁定`)
-  setTimeout(() => renderSeller(document.getElementById('app')), 1500)
+window.doAddLink = async (productId) => {
+  const inp = document.getElementById(`lnk-inp-${productId}`)
+  const msg = document.getElementById(`lnk-msg-${productId}`)
+  const url = inp.value.trim()
+  if (!url) return
+  msg.innerHTML = `<div style="font-size:12px;color:#6b7280">${t('提交中...')}</div>`
+  inp.disabled = true
+  const res = await POST(`/products/${productId}/links`, { url })
+  inp.disabled = false
+  if (res.error) { msg.innerHTML = alert$('error', res.error); return }
+  inp.value = ''
+  msg.innerHTML = res.verified
+    ? `<div style="font-size:12px;color:#16a34a">✅ ${t('链接已关联')}</div>`
+    : linkTaskCard(res)
+  const listEl = document.getElementById(`lnk-list-${productId}`)
+  if (listEl) { listEl.dataset.loaded = ''; await refreshLinks(productId) }
+}
+
+window.doDeleteLink = async (productId, linkId) => {
+  await fetch(`/api/products/${productId}/links/${linkId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${state.apiKey}` } })
+  const listEl = document.getElementById(`lnk-list-${productId}`)
+  if (listEl) { listEl.dataset.loaded = ''; await refreshLinks(productId) }
 }
 
 // ─── 卖家 Skill 管理 ──────────────────────────────────────────
@@ -1768,6 +2096,637 @@ window.doPublishSkill = async () => {
   if (res.error) { msgEl.innerHTML = alert$('error', res.error); return }
   msgEl.innerHTML = alert$('success', '✅ Skill 已发布！买家可以在 Skill 市场订阅')
   setTimeout(() => renderSeller(document.getElementById('app')), 1500)
+}
+
+// ─── 商品编辑页 ───────────────────────────────────────────────
+
+async function renderEditProduct(app, productId) {
+  if (!state.user) { renderLogin(); return }
+  app.innerHTML = shell(loading$(), 'seller')
+  const [p, links, tasksData] = await Promise.all([
+    GET(`/products/${productId}`),
+    GET(`/products/${productId}/links`),
+    GET(`/verify-tasks/by-product/${productId}`),
+  ])
+  const openTasks = Array.isArray(tasksData) ? tasksData : []
+  if (p.error) { app.innerHTML = shell(alert$('error', p.error), 'seller'); return }
+
+  const specsText = formatSpecs(p.specs || {})
+  const estText   = typeof p.estimated_days === 'object' && p.estimated_days
+    ? Object.entries(p.estimated_days).map(([k,v]) => `${k}:${v}`).join('\n')
+    : (p.estimated_days || '')
+
+  app.innerHTML = shell(`
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+      <button onclick="navigate('#seller')" style="background:none;border:none;cursor:pointer;font-size:20px;padding:0">←</button>
+      <h1 class="page-title" style="margin:0">${t('编辑商品')}</h1>
+    </div>
+    <div id="edit-msg"></div>
+    <div class="card">
+      <div class="form-group"><label class="form-label">${t('商品名称')}</label>
+        <input class="form-control" id="ep-title" value="${p.title?.replace(/"/g,'&quot;') || ''}"></div>
+      <div class="form-group"><label class="form-label">${t('商品描述')}</label>
+        <textarea class="form-control" id="ep-desc" rows="4">${p.description || ''}</textarea></div>
+      <div class="form-group"><label class="form-label">${t('规格参数')}</label>
+        <textarea class="form-control" id="ep-specs" rows="3" placeholder="颜色:黑色&#10;材质:陶瓷">${specsText}</textarea></div>
+      <div style="display:flex;gap:12px">
+        <div class="form-group" style="flex:1"><label class="form-label">${t('价格（WAZ）')}</label>
+          <input class="form-control" id="ep-price" type="number" value="${p.price || ''}"></div>
+        <div class="form-group" style="flex:1"><label class="form-label">${t('库存')}</label>
+          <input class="form-control" id="ep-stock" type="number" value="${p.stock ?? 1}"></div>
+      </div>
+      <details style="margin-bottom:12px">
+        <summary style="font-size:13px;color:#6b7280;cursor:pointer">${t('物流 & 售后')}</summary>
+        <div style="margin-top:12px">
+          <div style="display:flex;gap:12px">
+            <div class="form-group" style="flex:1"><label class="form-label">${t('处理时间 (小时)')}</label>
+              <input class="form-control" id="ep-handling" type="number" value="${p.handling_hours ?? 24}"></div>
+            <div class="form-group" style="flex:1"><label class="form-label">${t('退货天数')}</label>
+              <input class="form-control" id="ep-return" type="number" value="${p.return_days ?? 7}"></div>
+          </div>
+          <div style="display:flex;gap:12px">
+            <div class="form-group" style="flex:1"><label class="form-label">${t('质保天数')}</label>
+              <input class="form-control" id="ep-warranty" type="number" value="${p.warranty_days ?? 0}"></div>
+            <div class="form-group" style="flex:1"><label class="form-label">${t('发货地区')}</label>
+              <input class="form-control" id="ep-ship-regions" value="${p.ship_regions || '全国'}"></div>
+          </div>
+          <div class="form-group"><label class="form-label">${t('时效 (天)')}<span style="font-size:11px;color:#9ca3af;margin-left:6px">${t('每行：华东: 2')}</span></label>
+            <textarea class="form-control" id="ep-est-days" rows="2">${estText}</textarea></div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" id="ep-fragile" ${p.fragile ? 'checked' : ''} style="width:16px;height:16px">
+            <label for="ep-fragile" style="font-size:13px">${t('易碎品，需特殊包装')}</label>
+          </div>
+        </div>
+      </details>
+      <button class="btn btn-primary" onclick="doUpdateProduct('${productId}')">${t('保存修改')}</button>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div style="font-weight:600;margin-bottom:12px">🔗 ${t('外部链接')}</div>
+      <div style="font-size:12px;color:#6b7280;margin-bottom:10px">${t('买家粘贴这些链接时，智能下单会直接匹配到你的商品')}</div>
+      <div id="ep-links-list">
+        ${links.length === 0
+          ? `<div style="font-size:12px;color:#9ca3af">${t('暂无外部链接')}</div>`
+          : links.map(lk => {
+              const pendingTask = lk.verified === 0 && !lk.revoked ? openTasks.find(tk => tk.url === lk.url) : null
+              const isRevoked = lk.revoked === 1
+              let borderColor = '#d1fae5'
+              if (isRevoked) borderColor = '#fecaca'
+              else if (!lk.verified) borderColor = '#fde68a'
+              return `
+            <div style="border:1px solid ${borderColor};border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12px">
+              <div style="display:flex;align-items:flex-start;gap:6px">
+                <span style="flex-shrink:0">${isRevoked ? '❌' : lk.verified ? '✅' : '⏳'}</span>
+                <div style="flex:1;min-width:0">
+                  <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${isRevoked ? '#9ca3af' : '#374151'};${isRevoked ? 'text-decoration:line-through' : ''}">${lk.url}</div>
+                  <div style="color:#9ca3af;margin-top:2px">${lk.source === 'import' ? t('导入来源') : lk.source === 'claim' ? t('认领验证') : t('手动添加')} · ${isRevoked ? '<span style="color:#ef4444">主权失效</span>' : lk.verified ? '✓ ' + t('已验证') : t('待验证')}</div>
+                </div>
+                <button onclick="doDeleteLinkEdit('${productId}','${lk.id}')" style="background:none;border:none;color:#dc2626;cursor:pointer;font-size:14px;padding:0;flex-shrink:0">×</button>
+              </div>
+              ${isRevoked ? `
+                <div style="margin-top:6px;padding:6px 8px;background:#fef2f2;border-radius:6px;font-size:12px;color:#991b1b">
+                  ⚠️ ${t('此链接已被其他商家通过验证取得归属权，如有异议可再次发起挑战（需支付费用）。')}
+                </div>` : ''}
+              ${pendingTask ? `
+                <div style="margin-top:6px;padding:8px 10px;background:#fffbeb;border-radius:6px;font-size:12px">
+                  <div style="color:#92400e;font-weight:600;margin-bottom:6px">🔑 ${t('验证码')}：<span style="font-family:monospace;font-size:14px;letter-spacing:2px">[${pendingTask.code}]</span></div>
+                  ${pendingTask.status === 'code_issued' ? `
+                  <div style="color:#374151;margin-bottom:8px;line-height:1.5">${t('请将以上验证码放入原平台商品标题或描述，完成后点击下方按钮提交任务。')}</div>
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <button class="btn btn-primary btn-sm" id="confirm-btn-${pendingTask.id}" style="width:auto" onclick="doConfirmVerifyTask('${pendingTask.id}','${productId}')">${t('已添加验证码，提交任务')}</button>
+                    <div id="confirm-msg-${pendingTask.id}" style="font-size:12px;color:#6b7280"></div>
+                  </div>` : `
+                  <div style="color:#6b7280">${t('任务已提交，等待验证员审核 · 截止')} ${new Date(pendingTask.expires_at).toLocaleDateString()}</div>
+                  <a href="#verify-tasks" style="font-size:11px;color:#4f46e5">${t('查看任务进度')}</a>`}
+                </div>` : ''}
+            </div>`}).join('')}
+      </div>
+      <div style="display:flex;gap:6px;margin-top:10px">
+        <input class="form-control" id="ep-lnk-inp" placeholder="${t('粘贴站外链接（需众包验证）')}" style="font-size:12px;flex:1" onkeydown="if(event.key==='Enter')doAddLinkEdit('${productId}')">
+        <button class="btn btn-outline btn-sm" style="flex-shrink:0;width:auto" onclick="doAddLinkEdit('${productId}')">${t('添加')}</button>
+      </div>
+      <div id="ep-lnk-msg"></div>
+    </div>
+  `, 'seller')
+}
+
+window.doUpdateProduct = async (productId) => {
+  const msgEl = document.getElementById('edit-msg')
+  const estRaw = document.getElementById('ep-est-days').value.trim()
+  const payload = {
+    title:          document.getElementById('ep-title').value.trim(),
+    description:    document.getElementById('ep-desc').value.trim(),
+    price:          Number(document.getElementById('ep-price').value),
+    stock:          Number(document.getElementById('ep-stock').value),
+    specs:          parseSpecs(document.getElementById('ep-specs').value),
+    handling_hours: Number(document.getElementById('ep-handling').value) || 24,
+    return_days:    Number(document.getElementById('ep-return').value) ?? 7,
+    warranty_days:  Number(document.getElementById('ep-warranty').value) ?? 0,
+    ship_regions:   document.getElementById('ep-ship-regions').value.trim(),
+    estimated_days: parseSpecs(estRaw),
+    fragile:        document.getElementById('ep-fragile').checked ? 1 : 0,
+  }
+  if (!payload.title || !payload.description || !payload.price) {
+    msgEl.innerHTML = alert$('error', t('请填写商品名、描述、价格')); return
+  }
+  const btn = document.querySelector('[onclick*="doUpdateProduct"]')
+  if (btn) { btn.disabled = true; btn.textContent = t('保存中...') }
+  const res = await fetch(`/api/products/${productId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${state.apiKey}` },
+    body: JSON.stringify(payload),
+  }).then(r => r.json())
+  if (btn) { btn.disabled = false; btn.textContent = t('保存修改') }
+  if (res.error) { msgEl.innerHTML = alert$('error', res.error); return }
+  msgEl.innerHTML = alert$('success', t('已保存'))
+  setTimeout(() => msgEl.innerHTML = '', 2000)
+}
+
+window.doAddLinkEdit = async (productId) => {
+  const inp = document.getElementById('ep-lnk-inp')
+  const msg = document.getElementById('ep-lnk-msg')
+  const url = inp.value.trim()
+  if (!url) return
+  msg.innerHTML = `<div style="font-size:12px;color:#6b7280">${t('提交中...')}</div>`
+  inp.disabled = true
+  const res = await POST(`/products/${productId}/links`, { url })
+  inp.disabled = false
+  if (res.error) { msg.innerHTML = alert$('error', res.error); return }
+  inp.value = ''
+  msg.innerHTML = res.verified
+    ? `<div style="font-size:12px;color:#16a34a">✅ ${t('链接已关联')}</div>`
+    : linkTaskCard(res)
+  renderEditProduct(document.getElementById('app'), productId)
+}
+
+window.doDeleteLinkEdit = async (productId, linkId) => {
+  await fetch(`/api/products/${productId}/links/${linkId}`, {
+    method: 'DELETE', headers: { Authorization: `Bearer ${state.apiKey}` }
+  })
+  renderEditProduct(document.getElementById('app'), productId)
+}
+
+window.doConfirmVerifyTask = async (taskId, productId) => {
+  const btn = document.getElementById(`confirm-btn-${taskId}`)
+  const msgEl = document.getElementById(`confirm-msg-${taskId}`)
+  if (btn) { btn.disabled = true; btn.textContent = t('提交中...') }
+  const r = await POST(`/verify-tasks/${taskId}/confirm`, {})
+  if (r.error) {
+    if (msgEl) { msgEl.style.color = '#ef4444'; msgEl.textContent = r.error }
+    if (btn) { btn.disabled = false; btn.textContent = t('已添加验证码，提交任务') }
+  } else {
+    if (msgEl) { msgEl.style.color = '#10b981'; msgEl.textContent = t('✓ 已提交，等待审核员确认') }
+    if (btn) btn.style.display = 'none'
+    setTimeout(() => renderEditProduct(document.getElementById('app'), productId), 1000)
+  }
+}
+
+// ─── 智能下单（Agent Buy）─────────────────────────────────────
+
+async function renderAgentBuy(app) {
+  if (!state.user) { renderLogin(); return }
+  if (state.user.role !== 'buyer') {
+    app.innerHTML = shell(`<div class="alert alert-info">${t('智能下单仅限买家使用')}</div>`, 'shop')
+    return
+  }
+
+  app.innerHTML = shell(`
+    <h1 class="page-title">🤖 ${t('智能下单')}</h1>
+    <p style="color:#6b7280;font-size:13px;margin-bottom:16px">${t('粘贴商品链接，AI 自动搜索 WebAZ 更优方案，可一键下单')}</p>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="form-group">
+        <label class="form-label">${t('商品链接')}</label>
+        <input class="form-control" id="ab-url" placeholder="${t('粘贴淘宝 / 京东 / 亚马逊等链接')}" style="font-size:13px">
+      </div>
+      <div class="form-group">
+        <label class="form-label">${t('收货地址')}</label>
+        <input class="form-control" id="ab-addr" placeholder="${t('省市区街道，用于自动下单')}" style="font-size:13px">
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+        <input type="checkbox" id="ab-auto" style="width:16px;height:16px">
+        <label for="ab-auto" style="font-size:13px;cursor:pointer">${t('找到更优方案后自动下单（否则仅展示比价结果）')}</label>
+      </div>
+      <button class="btn btn-primary" id="ab-btn" onclick="doAgentBuy()">${t('开始分析')}</button>
+    </div>
+
+    <div id="ab-result"></div>
+  `, 'shop')
+}
+
+window.doAgentBuy = async () => {
+  const url    = document.getElementById('ab-url').value.trim()
+  const addr   = document.getElementById('ab-addr').value.trim()
+  const auto   = document.getElementById('ab-auto').checked
+  const btn    = document.getElementById('ab-btn')
+  const result = document.getElementById('ab-result')
+
+  if (!url) { result.innerHTML = alert$('error', t('请粘贴商品链接')); return }
+  if (auto && !addr) { result.innerHTML = alert$('error', t('自动下单需填写收货地址')); return }
+
+  btn.disabled = true
+  btn.textContent = t('分析中...')
+  result.innerHTML = loading$()
+
+  const res = await POST('/agent-buy', {
+    source_url: url,
+    shipping_address: addr || undefined,
+    auto_buy: auto,
+  })
+
+  btn.disabled = false
+  btn.textContent = t('开始分析')
+
+  if (res.error) { result.innerHTML = alert$('error', res.error); return }
+
+  const recColor = { buy_webaz: '#16a34a', buy_source: '#2563eb', no_match: '#6b7280' }[res.recommendation] || '#6b7280'
+  const recLabel = { buy_webaz: t('✅ 推荐 WebAZ 方案'), buy_source: t('🔗 建议继续在原平台购买'), no_match: t('😕 暂未找到合适替代') }[res.recommendation] || ''
+
+  const bestCard = res.best_product ? `
+    <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:12px;margin:12px 0">
+      <div style="font-weight:600;font-size:14px;margin-bottom:4px">${res.best_product.title}</div>
+      <div style="font-size:18px;font-weight:700;color:#16a34a;margin-bottom:4px">${res.best_product.price} WAZ</div>
+      <div style="font-size:12px;color:#6b7280;margin-bottom:8px">${res.best_product.agent_summary || ''}</div>
+      ${!res.auto_bought ? `<button class="btn btn-primary btn-sm" style="width:auto" onclick="navigate('#order-product/${res.best_product.id}')">${t('查看并下单')}</button>` : ''}
+    </div>` : ''
+
+  const orderCard = res.auto_bought ? `
+    <div class="alert alert-success" style="margin-top:12px">
+      <strong>${t('已自动下单！')}</strong> ${t('订单号')}：<a href="#order/${res.order_id}" style="color:#16a34a;font-weight:600">${res.order_id}</a><br>
+      <span style="font-size:12px">${t('金额')}：${res.verified_price} WAZ ${t('（已从钱包托管）')}</span>
+    </div>` : ''
+
+  const altList = res.webaz_products?.length > 0 ? `
+    <div style="margin-top:16px">
+      <div style="font-size:12px;color:#9ca3af;margin-bottom:8px">${t('WebAZ 上的相关商品')}</div>
+      ${res.webaz_products.map(p => `
+        <div onclick="navigate('#order-product/${p.id}')" style="background:${p.url_match ? '#f0fdf4' : '#f9fafb'};border:1px solid ${p.url_match ? '#bbf7d0' : '#f3f4f6'};border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer;display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div style="font-size:13px;font-weight:500">${p.url_match ? '🎯 ' : ''}${p.title}</div>
+            <div style="font-size:11px;color:#6b7280">${p.agent_summary || ''}${p.url_match ? ` · <span style="color:#16a34a">${t('同款商品')}</span>` : ''}</div>
+          </div>
+          <div style="font-weight:700;color:#1d4ed8;white-space:nowrap;margin-left:8px">${p.price} WAZ</div>
+        </div>`).join('')}
+    </div>` : ''
+
+  result.innerHTML = `
+    <div class="card">
+      <div style="font-size:13px;color:#6b7280;margin-bottom:4px">${t('原商品')}：${res.source.title}${res.source.price_cny ? ` · ¥${res.source.price_cny}` : ''}</div>
+      <div style="font-weight:700;font-size:15px;color:${recColor};margin-bottom:8px">${recLabel}</div>
+      <div style="font-size:14px;line-height:1.5;color:#374151">${res.reason}</div>
+      ${res.savings_note ? `<div style="font-size:12px;color:#16a34a;margin-top:4px">💰 ${res.savings_note}</div>` : ''}
+      ${bestCard}
+      ${orderCard}
+      ${altList}
+    </div>`
+}
+
+// ─── 验证任务页 ──────────────────────────────────────────────
+
+async function renderVerifyTasks(app) {
+  if (!state.user) { renderLogin(); return }
+  app.innerHTML = shell(loading$(), 'verify-tasks')
+
+  const [data, statsData, claimsData] = await Promise.all([
+    GET('/verify-tasks/mine'),
+    GET('/verify-stats'),
+    GET('/verify-tasks/my-claims'),
+  ])
+
+  const stats = statsData || {}
+  const tasks = data?.tasks || []
+  const myClaims = Array.isArray(claimsData) ? claimsData : []
+
+  const rightsColor = (stats.verify_rights ?? 0) >= 0 ? '#10b981' : '#ef4444'
+  const statBar = `
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-weight:700;margin-bottom:12px">🛡️ ${t('我的验证状态')}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;text-align:center">
+        <div>
+          <div style="font-size:22px;font-weight:800;color:${rightsColor}">${stats.verify_rights ?? 0}</div>
+          <div style="font-size:12px;color:#6b7280">${t('验证权')}</div>
+        </div>
+        <div>
+          <div style="font-size:22px;font-weight:800;color:#4f46e5">${stats.tasks_done ?? 0}</div>
+          <div style="font-size:12px;color:#6b7280">${t('已完成')}</div>
+        </div>
+        <div>
+          <div style="font-size:22px;font-weight:800;color:#10b981">${stats.tasks_correct ?? 0}</div>
+          <div style="font-size:12px;color:#6b7280">${t('正确')}</div>
+        </div>
+      </div>
+      ${stats.suspended_until && new Date(stats.suspended_until) > new Date() ? `
+        <div style="margin-top:12px;padding:8px;background:#fef2f2;border-radius:8px;color:#ef4444;font-size:13px">
+          ⚠️ ${t('验证权已暂停至')} ${new Date(stats.suspended_until).toLocaleDateString()}
+        </div>` : ''}
+    </div>`
+
+  // ── 我发起的认领任务（卖家视角）──────────────────────────────
+  const claimStatusLabel = (s, result) => {
+    if (s === 'code_issued') return `<span style="color:#d97706;font-weight:600">${t('待确认')}</span>`
+    if (s === 'open')        return `<span style="color:#4f46e5;font-weight:600">${t('验证中')}</span>`
+    if (s === 'settled' && result === 'verified') return `<span style="color:#10b981;font-weight:600">✓ ${t('已通过')}</span>`
+    if (s === 'settled' && result === 'failed')   return `<span style="color:#ef4444;font-weight:600">✗ ${t('未通过')}</span>`
+    return `<span style="color:#9ca3af">${s}</span>`
+  }
+
+  const myClaimsSection = myClaims.length === 0 ? '' : `
+    <div style="font-weight:700;margin-bottom:12px">📋 ${t('我发起的认领任务')} (${myClaims.length})</div>
+    ${myClaims.map(tk => `
+      <div class="card" style="margin-bottom:10px;font-size:13px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
+          <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;margin-right:8px">${escHtml(tk.product_title)}</div>
+          <div>${claimStatusLabel(tk.status, tk.result)}</div>
+        </div>
+        <div style="color:#6b7280;margin-bottom:4px;word-break:break-all;font-size:12px">${escHtml(tk.url)}</div>
+        ${tk.status === 'code_issued' ? `
+          <div style="display:flex;align-items:center;gap:8px;margin-top:6px;padding:6px 8px;background:#fffbeb;border-radius:6px">
+            <span style="font-size:12px;color:#92400e">${t('验证码')}：<strong style="font-family:monospace">[${tk.code}]</strong> · ${t('请在商品编辑页确认')}</span>
+            <button class="btn btn-primary btn-sm" style="width:auto;font-size:11px" onclick="navigate('#edit-product/${tk.product_id}')">${t('去确认')}</button>
+          </div>` : ''}
+        ${tk.status === 'open' ? `
+          <div style="margin-top:6px;font-size:12px;color:#6b7280">
+            ${t('验证进度')}：${tk.submissions_done}/${tk.verifiers_needed} · ${t('截止')} ${new Date(tk.expires_at).toLocaleDateString()}
+          </div>` : ''}
+        ${tk.status === 'settled' ? `
+          <div style="margin-top:6px;font-size:12px;color:#6b7280">${t('结算于')} ${new Date(tk.settled_at).toLocaleDateString()}</div>` : ''}
+      </div>`).join('')}
+    <div style="margin-bottom:16px"></div>`
+
+  // ── 分配给我的验证任务（验证员视角）─────────────────────────
+  const taskCards = tasks.length === 0
+    ? `<div class="empty"><div class="empty-icon">✅</div><div class="empty-text">${t('暂无分配到你的验证任务')}</div></div>`
+    : tasks.map(task => {
+        const already = !!task.submitted_at
+        const expired = new Date(task.expires_at) < new Date()
+        return `
+          <div class="card" style="margin-bottom:12px;${already ? 'opacity:0.7' : ''}">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+              <div style="font-weight:700;font-size:14px">🔗 ${t('链接所有权验证')}</div>
+              <div style="font-size:12px;color:${expired ? '#ef4444' : '#6b7280'}">
+                ${expired ? t('已过期') : t('截止') + ' ' + new Date(task.expires_at).toLocaleString()}
+              </div>
+            </div>
+            <div style="font-size:13px;color:#6b7280;margin-bottom:4px">${t('奖励')}: <strong style="color:#10b981">${(task.reward_per_verifier || 0).toFixed(3)} WAZ</strong></div>
+            <div style="font-size:13px;margin-bottom:12px;word-break:break-all">
+              <a href="${escHtml(task.url)}" target="_blank" style="color:#4f46e5">${escHtml(task.url)}</a>
+            </div>
+            <div style="font-size:13px;color:#374151;margin-bottom:12px;background:#f9fafb;padding:10px;border-radius:8px;line-height:1.5">
+              ${t('请打开上方链接，在标题或详情中找到放置的')} <strong>${t('8位验证码')}</strong>${t('（格式如 [XXXXXXXX]），将其完整填入下方。')}<br>
+              <span style="color:#6b7280;font-size:12px">${t('填入内容必须与页面中看到的完全一致，包括括号。')}</span>
+            </div>
+            ${already ? `
+              <div style="padding:10px;background:#f0fdf4;border-radius:8px;color:#10b981;font-size:13px">
+                ✓ ${t('已提交，等待其他验证者完成后结算')}
+              </div>` : expired ? `
+              <div style="padding:10px;background:#fef2f2;border-radius:8px;color:#ef4444;font-size:13px">
+                ✗ ${t('任务已过期')}
+              </div>` : `
+              <div style="display:flex;gap:8px;align-items:center">
+                <input class="form-control" id="vtinput-${task.id}" placeholder="${t('填入看到的验证码，如 [AB3KW2QP]')}" style="flex:1;font-family:monospace">
+                <button class="btn btn-primary btn-sm" style="width:auto;white-space:nowrap" onclick="doSubmitVerifyTask('${task.id}')">${t('提交')}</button>
+              </div>
+              <div id="vtmsg-${task.id}" style="margin-top:6px;font-size:12px;color:#6b7280"></div>`}
+          </div>`
+      }).join('')
+
+  app.innerHTML = shell(`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+      <h1 class="page-title" style="margin:0">🛡️ ${t('验证任务')}</h1>
+      ${state.user?.id === 'usr_iaudit_001' ? `<button class="btn btn-outline btn-sm" onclick="navigate('#verify-admin')" style="font-size:11px">${t('管理白名单')}</button>` : ''}
+    </div>
+    <div style="font-size:13px;color:#6b7280;margin-bottom:16px">${t('帮助平台验证外部链接所有权，获得 WAZ 奖励')}</div>
+    ${statBar}
+    ${myClaimsSection}
+    <div style="font-weight:700;margin-bottom:12px">${t('分配给我的任务')} (${tasks.length})</div>
+    ${taskCards}
+  `, 'verify-tasks')
+}
+
+window.doSubmitVerifyTask = async (taskId) => {
+  const inp = document.getElementById(`vtinput-${taskId}`)
+  const msgEl = document.getElementById(`vtmsg-${taskId}`)
+  const submission = (inp?.value || '').trim()
+  if (!submission) { msgEl.textContent = t('请填入看到的验证码'); return }
+  const btn = inp.nextElementSibling
+  btn.disabled = true
+  btn.textContent = t('提交中...')
+  const r = await POST(`/verify-tasks/${taskId}/submit`, { submission })
+  if (r.error) {
+    msgEl.style.color = '#ef4444'
+    msgEl.textContent = r.error
+    btn.disabled = false
+    btn.textContent = t('提交')
+  } else {
+    msgEl.style.color = '#10b981'
+    msgEl.textContent = t('✓ 已提交，等待结算')
+    btn.disabled = true
+    inp.disabled = true
+  }
+}
+
+// ─── 验证员白名单管理页 ───────────────────────────────────────────
+
+async function renderVerifyAdmin(app) {
+  if (!state.user) { renderLogin(); return }
+  app.innerHTML = shell(loading$(), 'verify-tasks')
+
+  const [auditorRes, listRes] = await Promise.all([
+    GET('/admin/auditor'),
+    GET('/admin/verifier-whitelist'),
+  ])
+
+  const auditor = auditorRes?.api_key ? auditorRes : null
+  const whitelist = Array.isArray(listRes) ? listRes : []
+
+  const auditorCard = auditor ? `
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-weight:700;margin-bottom:12px">🔑 ${t('内部审核账号')}</div>
+      <div style="font-size:13px;color:#6b7280;margin-bottom:8px">${t('将此 API Key 交给负责人工审核的人员，用于登录审核账号。')}</div>
+      <div style="background:#f3f4f6;border-radius:8px;padding:12px;margin-bottom:8px">
+        <div style="font-size:12px;color:#6b7280;margin-bottom:4px">${t('账号名称')}: <strong>${escHtml(auditor.name)}</strong></div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <code id="auditor-key-display" style="font-size:12px;flex:1;word-break:break-all;filter:blur(4px)">${escHtml(auditor.api_key)}</code>
+          <button class="btn btn-outline btn-sm" onclick="document.getElementById('auditor-key-display').style.filter='none';this.style.display='none'">${t('显示')}</button>
+          <button class="btn btn-outline btn-sm" onclick="navigator.clipboard.writeText('${escHtml(auditor.api_key)}')">${t('复制')}</button>
+        </div>
+      </div>
+      <div style="font-size:12px;color:#9ca3af">${t('账号 ID')}: ${escHtml(auditor.id)}</div>
+    </div>` : `<div class="card">${alert$('error', '内部审核账号未初始化')}</div>`
+
+  const whitelistRows = whitelist.map(u => `
+    <div style="display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid #f3f4f6">
+      <div style="flex:1">
+        <div style="font-size:14px;font-weight:600">${escHtml(u.name)}</div>
+        <div style="font-size:11px;color:#9ca3af">${escHtml(u.user_id)} · ${u.role} · ${t('加入')} ${new Date(u.added_at).toLocaleDateString()}</div>
+        ${u.note ? `<div style="font-size:11px;color:#6b7280">${escHtml(u.note)}</div>` : ''}
+      </div>
+      ${u.user_id === 'usr_iaudit_001'
+        ? `<span class="badge badge-blue">${t('系统')}</span>`
+        : `<button class="btn btn-sm" style="background:#fee2e2;color:#991b1b" onclick="removeFromWhitelist('${escHtml(u.user_id)}')">${t('移除')}</button>`}
+    </div>`).join('')
+
+  app.innerHTML = shell(`
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+      <button class="btn btn-gray btn-sm" onclick="navigate('#verify-tasks')">← ${t('返回')}</button>
+      <h1 class="page-title" style="margin:0">⚙️ ${t('验证管理')}</h1>
+    </div>
+
+    ${auditorCard}
+
+    <div class="card">
+      <div style="font-weight:700;margin-bottom:12px">📋 ${t('验证员白名单')} (${whitelist.length})</div>
+      <div style="font-size:13px;color:#6b7280;margin-bottom:12px">${t('只有白名单内的用户才会被分配到验证任务。')}</div>
+
+      ${whitelist.length ? whitelistRows : `<div style="color:#9ca3af;font-size:13px">${t('白名单为空')}</div>`}
+
+      <div style="margin-top:16px;border-top:1px solid #f3f4f6;padding-top:16px">
+        <div style="font-weight:600;font-size:13px;margin-bottom:8px">${t('添加验证员')}</div>
+        <div style="font-size:12px;color:#9ca3af;margin-bottom:8px">${t('输入用户注册名称')}</div>
+        <div style="display:flex;gap:8px">
+          <input class="form-control" id="wl-name-inp" placeholder="${t('用户名称')}" style="flex:1">
+          <button class="btn btn-primary btn-sm" onclick="addToWhitelist()">${t('添加')}</button>
+        </div>
+        <div id="wl-msg" style="margin-top:8px;font-size:13px"></div>
+      </div>
+    </div>
+  `, 'verify-tasks')
+}
+
+window.addToWhitelist = async () => {
+  const name = document.getElementById('wl-name-inp')?.value.trim()
+  const msgEl = document.getElementById('wl-msg')
+  if (!name) return void (msgEl.innerHTML = `<span style="color:#dc2626">${t('请输入用户名称')}</span>`)
+  msgEl.innerHTML = `<span style="color:#6b7280">${t('添加中…')}</span>`
+  const r = await POST('/admin/verifier-whitelist', { name })
+  if (r.error) {
+    msgEl.innerHTML = `<span style="color:#dc2626">${escHtml(r.error)}</span>`
+  } else {
+    msgEl.innerHTML = `<span style="color:#10b981">✓ ${escHtml(r.name)} ${t('已加入白名单')}</span>`
+    setTimeout(() => renderVerifyAdmin(document.getElementById('app')), 800)
+  }
+}
+
+window.removeFromWhitelist = async (userId) => {
+  if (!confirm(t('确认从白名单移除？'))) return
+  const r = await api('DELETE', `/admin/verifier-whitelist/${userId}`)
+  if (r.error) return void alert(r.error)
+  renderVerifyAdmin(document.getElementById('app'))
+}
+
+// ─── 链接认领认证页 ────────────────────────────────────────────
+
+async function renderClaimUrl(app, encodedUrl) {
+  if (!state.user) { renderLogin(); return }
+  if (state.user.role !== 'seller') {
+    app.innerHTML = shell(`<div class="card">${alert$('error', t('仅卖家可发起链接认领'))}</div>`, 'seller')
+    return
+  }
+
+  const url = decodeURIComponent(encodedUrl || '')
+  if (!url) { navigate('#seller'); return }
+
+  app.innerHTML = shell(`
+    <h1 class="page-title">🏴 ${t('发起链接认领认证')}</h1>
+    <div class="card" style="margin-bottom:12px;background:#fffbeb;border:1px solid #f59e0b">
+      <div style="font-size:13px;line-height:1.6;color:#92400e">
+        <strong>${t('此链接已被其他商家认领')}</strong><br>
+        ${t('您需要填写您的商品信息，并在原平台商品页面放入系统生成的验证码，经过众包验证者确认后，链接归属将转移到您的商品。')}<br>
+        <div style="word-break:break-all;margin-top:6px;color:#6b7280;font-size:12px">🔗 ${escHtml(url)}</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="font-weight:700;margin-bottom:16px">${t('填写您的商品信息')}</div>
+      <div id="claim-msg"></div>
+      <div class="form-group">
+        <label class="form-label">${t('商品名称')} *</label>
+        <input class="form-control" id="clm-title" placeholder="${t('您在此平台销售的商品名')}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">${t('商品描述')} *</label>
+        <textarea class="form-control" id="clm-desc" rows="3" placeholder="${t('简要描述商品')}"></textarea>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group">
+          <label class="form-label">${t('价格 (WAZ)')} *</label>
+          <input class="form-control" id="clm-price" type="number" min="0.01" step="0.01" placeholder="0.00">
+        </div>
+        <div class="form-group">
+          <label class="form-label">${t('库存')}</label>
+          <input class="form-control" id="clm-stock" type="number" min="1" value="1">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">${t('类目')}</label>
+        <select class="form-control" id="clm-cat">
+          <option value="">-- ${t('选择类目')} --</option>
+          <option value="electronics">📱 ${t('电子产品')}</option>
+          <option value="clothing">👕 ${t('服饰')}</option>
+          <option value="home">🏠 ${t('家居')}</option>
+          <option value="food">🍎 ${t('食品')}</option>
+          <option value="books">📚 ${t('图书')}</option>
+          <option value="sports">⚽ ${t('运动')}</option>
+          <option value="other">📦 ${t('其他')}</option>
+        </select>
+      </div>
+      <div style="font-size:12px;color:#6b7280;margin-bottom:16px;padding:10px;background:#f9fafb;border-radius:8px">
+        💡 ${t('提交后系统将生成一个 8 位验证码，您需要将其加入原平台商品标题或描述（如：[XXXXXXXX]），然后等待验证者确认。验证通过后链接归属自动转移。')}
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-gray" onclick="navigate('#seller')">${t('取消')}</button>
+        <button class="btn btn-primary" id="clm-btn" onclick="doClaimUrl('${escHtml(url)}')">${t('提交认领申请')}</button>
+      </div>
+    </div>
+  `, 'seller')
+}
+
+window.doClaimUrl = async (url) => {
+  const msgEl = document.getElementById('claim-msg')
+  const btn   = document.getElementById('clm-btn')
+  const title = document.getElementById('clm-title').value.trim()
+  const desc  = document.getElementById('clm-desc').value.trim()
+  const price = Number(document.getElementById('clm-price').value)
+  const stock = Number(document.getElementById('clm-stock').value) || 1
+  const category = document.getElementById('clm-cat').value
+
+  if (!title || !desc || !price) {
+    msgEl.innerHTML = alert$('error', t('请填写商品名、描述和价格'))
+    return
+  }
+
+  btn.disabled = true
+  btn.textContent = t('提交中...')
+
+  const r = await POST('/claim-url', { url, title, description: desc, price, stock, category })
+
+  if (r.error) {
+    msgEl.innerHTML = alert$('error', r.error)
+    btn.disabled = false
+    btn.textContent = t('提交认领申请')
+    return
+  }
+
+  // 成功：显示验证码指引
+  document.querySelector('.card:last-of-type').innerHTML = `
+    <div style="text-align:center;padding:16px 0 8px">
+      <div style="font-size:32px;margin-bottom:8px">✅</div>
+      <div style="font-weight:700;font-size:18px;margin-bottom:4px">${t('认领任务已创建')}</div>
+      <div style="font-size:13px;color:#6b7280;margin-bottom:20px">${t('商品已建立，等待验证完成后链接归属将转移到您的商品')}</div>
+    </div>
+    <div style="padding:16px;background:#f0f9ff;border:2px dashed #60a5fa;border-radius:10px;text-align:center;margin-bottom:16px">
+      <div style="font-size:12px;color:#2563eb;margin-bottom:6px;font-weight:600">${t('请将以下验证码放入原平台商品标题或描述')}</div>
+      <div style="font-size:28px;font-weight:900;letter-spacing:3px;font-family:monospace;color:#1e40af">${escHtml(r.code)}</div>
+      <div style="font-size:12px;color:#6b7280;margin-top:6px">${t('格式示例')}: 【商品标题 ${escHtml(r.code)}】</div>
+      <div style="font-size:12px;color:#ef4444;margin-top:4px">${t('截止')} ${new Date(r.expires_at).toLocaleString()}</div>
+    </div>
+    <div style="font-size:13px;color:#374151;margin-bottom:16px;line-height:1.6">
+      ${escHtml(r.message)}
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="navigate('#edit-product/${r.product_id}')">${t('去商品编辑页确认已添加 →')}</button>
+      <button class="btn btn-outline" onclick="navigate('#seller')">${t('返回卖家后台')}</button>
+    </div>`
 }
 
 // ─── 钱包页 ───────────────────────────────────────────────────

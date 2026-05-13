@@ -1,0 +1,20 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.seasonsagents-art/webaz",
+  "description": "Agent-native commerce protocol. Humans and AI trade via MCP: search, order, escrow, disputes.",
+  "repository": {
+    "url": "https://github.com/seasonsagents-art/webaz",
+    "source": "github"
+  },
+  "version": "0.1.8",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@seasonkoh/webaz",
+      "version": "0.1.8",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

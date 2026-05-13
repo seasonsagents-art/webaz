@@ -85,6 +85,21 @@ db.exec(`
   )
 `)
 
+// ─── MCP 工具调用埋点表（远程上报）─────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS mcp_tool_calls (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    tool_name      TEXT NOT NULL,
+    user_id_hash   TEXT,
+    server_version TEXT,
+    outcome        TEXT NOT NULL,
+    latency_ms     INTEGER NOT NULL,
+    ts             TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_mcp_tc_ts   ON mcp_tool_calls(ts)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_mcp_tc_tool ON mcp_tool_calls(tool_name, ts)`)
+
 // ─── 内部审核账号（固定 ID，密钥由 MASTER_SEED 派生，幂等）────────
 const INTERNAL_AUDITOR_ID  = 'usr_iaudit_001'
 const INTERNAL_AUDITOR_KEY = 'key_iaudit_' + createHmac('sha256', MASTER_SEED).update('internal_auditor_v1').digest('hex').slice(0, 32)
@@ -993,6 +1008,92 @@ app.post('/api/verify-tasks/:id/submit', (req: Request, res: Response) => {
 app.get('/api/verify-stats', (req, res) => {
   const user = auth(req, res); if (!user) return
   res.json(getVerifierStats(user.id as string))
+})
+
+// ─── MCP 遥测：ingest + 管理员看板 ──────────────────────────────
+const TELEMETRY_RATE = new Map<string, number[]>()
+function rateLimitOk(ip: string, max = 200, windowMs = 60_000): boolean {
+  const now = Date.now()
+  const times = (TELEMETRY_RATE.get(ip) ?? []).filter((t) => now - t < windowMs)
+  if (times.length >= max) return false
+  times.push(now)
+  TELEMETRY_RATE.set(ip, times)
+  return true
+}
+
+app.post('/api/mcp-telemetry', (req: Request, res: Response) => {
+  const ip = req.ip || 'unknown'
+  if (!rateLimitOk(ip)) return void res.status(429).json({ error: 'rate-limited' })
+
+  const { tool_name, outcome, latency_ms, user_id_hash, server_version } = req.body ?? {}
+  if (typeof tool_name !== 'string' || tool_name.length === 0 || tool_name.length > 64) {
+    return void res.status(400).json({ error: 'bad tool_name' })
+  }
+  if (outcome !== 'success' && outcome !== 'error') {
+    return void res.status(400).json({ error: 'bad outcome' })
+  }
+  const lat = Number(latency_ms)
+  if (!Number.isFinite(lat) || lat < 0 || lat > 60_000) {
+    return void res.status(400).json({ error: 'bad latency' })
+  }
+  const uih = typeof user_id_hash === 'string' && /^[0-9a-f]{1,32}$/.test(user_id_hash) ? user_id_hash : null
+  const sv  = typeof server_version === 'string' && server_version.length <= 32 ? server_version : null
+
+  try {
+    db.prepare(`
+      INSERT INTO mcp_tool_calls (tool_name, user_id_hash, server_version, outcome, latency_ms)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(tool_name, uih, sv, outcome, Math.round(lat))
+  } catch { /* swallow — never fail telemetry */ }
+  res.json({ ok: true })
+})
+
+app.get('/api/admin/usage', (req: Request, res: Response) => {
+  if (!adminAuth(req, res)) return
+
+  const total      = db.prepare(`SELECT COUNT(*) as n FROM mcp_tool_calls`).get() as { n: number }
+  const total24h   = db.prepare(`SELECT COUNT(*) as n FROM mcp_tool_calls WHERE ts > datetime('now','-1 day')`).get() as { n: number }
+  const total7d    = db.prepare(`SELECT COUNT(*) as n FROM mcp_tool_calls WHERE ts > datetime('now','-7 day')`).get() as { n: number }
+  const totalUsers = db.prepare(`SELECT COUNT(DISTINCT user_id_hash) as n FROM mcp_tool_calls WHERE user_id_hash IS NOT NULL`).get() as { n: number }
+  const wau7d      = db.prepare(`SELECT COUNT(DISTINCT user_id_hash) as n FROM mcp_tool_calls WHERE user_id_hash IS NOT NULL AND ts > datetime('now','-7 day')`).get() as { n: number }
+  const dau24h     = db.prepare(`SELECT COUNT(DISTINCT user_id_hash) as n FROM mcp_tool_calls WHERE user_id_hash IS NOT NULL AND ts > datetime('now','-1 day')`).get() as { n: number }
+
+  const byTool = db.prepare(`
+    SELECT tool_name,
+           COUNT(*) AS calls,
+           SUM(CASE WHEN outcome='error' THEN 1 ELSE 0 END) AS errors,
+           ROUND(AVG(latency_ms), 0) AS avg_latency_ms
+    FROM mcp_tool_calls WHERE ts > datetime('now','-7 day')
+    GROUP BY tool_name ORDER BY calls DESC
+  `).all()
+  const byDay = db.prepare(`
+    SELECT substr(ts, 1, 10) AS day,
+           COUNT(*) AS calls,
+           COUNT(DISTINCT user_id_hash) AS distinct_users
+    FROM mcp_tool_calls WHERE ts > datetime('now','-14 day')
+    GROUP BY day ORDER BY day
+  `).all()
+  const byVersion = db.prepare(`
+    SELECT server_version,
+           COUNT(*) AS calls,
+           COUNT(DISTINCT user_id_hash) AS distinct_users
+    FROM mcp_tool_calls WHERE ts > datetime('now','-7 day')
+    GROUP BY server_version ORDER BY calls DESC
+  `).all()
+
+  res.json({
+    summary: {
+      total_calls:        total.n,
+      total_calls_24h:    total24h.n,
+      total_calls_7d:     total7d.n,
+      distinct_users_all: totalUsers.n,
+      dau_24h:            dau24h.n,
+      wau_7d:             wau7d.n,
+    },
+    by_tool_7d:    byTool,
+    by_day_14d:    byDay,
+    by_version_7d: byVersion,
+  })
 })
 
 // ─── 管理端点（验证员白名单 & 内部审核账号）─────────────────────

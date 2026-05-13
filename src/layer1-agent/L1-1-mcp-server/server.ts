@@ -73,6 +73,11 @@ import {
   MANIFEST_URI,
 } from '../../layer0-foundation/L0-5-manifest/manifest.js'
 import { requireAuth } from './auth.js'
+import { createHash } from 'node:crypto'
+
+const SERVER_VERSION = '0.1.8'
+const TELEMETRY_URL = process.env.WEBAZ_TELEMETRY_URL ?? 'https://webaz.xyz/api/mcp-telemetry'
+const TELEMETRY_ENABLED = (process.env.WEBAZ_TELEMETRY ?? 'on').toLowerCase() !== 'off'
 
 // ─── 初始化 ──────────────────────────────────────────────────
 
@@ -112,6 +117,20 @@ db.exec(`
     used_at    TEXT
   )
 `)
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS mcp_tool_calls (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    tool_name  TEXT NOT NULL,
+    user_id    TEXT,
+    ts         TEXT NOT NULL DEFAULT (datetime('now')),
+    outcome    TEXT NOT NULL,
+    latency_ms INTEGER NOT NULL,
+    error_msg  TEXT
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_mcp_tool_calls_ts   ON mcp_tool_calls(ts)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_mcp_tool_calls_tool ON mcp_tool_calls(tool_name, ts)`)
 
 // ─── 工具定义（Agent 读这些来理解如何使用协议）────────────────
 
@@ -1492,6 +1511,7 @@ export async function startMCPServer() {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args = {} } = request.params
+    const t0 = Date.now()
     let result: unknown
 
     try {
@@ -1516,6 +1536,8 @@ export async function startMCPServer() {
       result = { error: `执行出错：${(err as Error).message}` }
     }
 
+    recordToolCall(name, args, result, Date.now() - t0)
+
     return {
       content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
     }
@@ -1530,4 +1552,61 @@ export async function startMCPServer() {
 
 function addHours(date: Date, hours: number): string {
   return new Date(date.getTime() + hours * 3_600_000).toISOString()
+}
+
+function recordToolCall(
+  tool: string,
+  args: Record<string, unknown>,
+  result: unknown,
+  latencyMs: number,
+): void {
+  let userId: string | null = null
+  try {
+    const apiKey = args.api_key as string | undefined
+    if (apiKey) {
+      const row = db.prepare('SELECT id FROM users WHERE api_key = ?').get(apiKey) as
+        | { id: string }
+        | undefined
+      if (row) userId = row.id
+    }
+    const isError =
+      !!result && typeof result === 'object' && 'error' in (result as Record<string, unknown>)
+    const errorMsg = isError
+      ? String((result as { error: unknown }).error).slice(0, 200)
+      : null
+    db.prepare(
+      `INSERT INTO mcp_tool_calls (tool_name, user_id, outcome, latency_ms, error_msg)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(tool, userId, isError ? 'error' : 'success', latencyMs, errorMsg)
+
+    sendTelemetry({
+      tool_name: tool,
+      outcome: isError ? 'error' : 'success',
+      latency_ms: latencyMs,
+      user_id_hash: userId ? createHash('sha256').update(userId).digest('hex').slice(0, 16) : null,
+    })
+  } catch (e) {
+    console.error('[telemetry-write-failed]', (e as Error).message)
+  }
+}
+
+function sendTelemetry(payload: {
+  tool_name: string
+  outcome: 'success' | 'error'
+  latency_ms: number
+  user_id_hash: string | null
+}): void {
+  if (!TELEMETRY_ENABLED) return
+  try {
+    void fetch(TELEMETRY_URL, {
+      method:  'POST',
+      headers: { 'content-type': 'application/json' },
+      body:    JSON.stringify({
+        ...payload,
+        server_version: SERVER_VERSION,
+        ts:             new Date().toISOString(),
+      }),
+      signal:  AbortSignal.timeout(2000),
+    }).catch(() => { /* fire-and-forget */ })
+  } catch { /* never block the tool call */ }
 }

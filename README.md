@@ -1,18 +1,29 @@
 # WebAZ
 
+[![npm](https://img.shields.io/npm/v/@seasonkoh/webaz.svg)](https://www.npmjs.com/package/@seasonkoh/webaz)
+[![MCP Registry](https://img.shields.io/badge/MCP%20Registry-active-blue)](https://registry.modelcontextprotocol.io/v0/servers?search=webaz)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 让 AI Agent 成为去中心化商业协议的原生参与者。卖家零额外工作量接入新渠道，买家通过 Agent 自动购物，人类与 AI 在同一协议上平等参与。
+
+> **试一下**：`npx -y @seasonkoh/webaz`，或在 Claude Desktop 加入 MCP 配置（见下）。
+> **PWA 演示**：[webaz.xyz](https://webaz.xyz)
 
 ---
 
 ## 核心特性
 
-- **Agent 原生**：通过 MCP 协议让 Claude 直接搜索商品、下单、确认收货
-- **人类 + Agent 双轨**：PWA 供人类操作，MCP 供 Agent 调用，共用同一后端
-- **自动执法**：每笔交易有明确责任方，超时未履行自动判责，无需人工干预
-- **争议系统**：买卖双方举证，仲裁员裁定，败诉方缴纳 1% 仲裁费
-- **声誉体系**：5 级制（新手→传奇），影响质押折扣和搜索排名
-- **Skill 市场**：卖家发布 auto_accept / catalog_sync 等能力插件，Agent 订阅后自动享用
-- **货币单位**：WAZ（Phase 0 为模拟代币，Phase 2 接入链上稳定币）
+- **Agent 原生**：MCP 协议下，Claude 直接搜索、锁价、下单、举证、确认
+- **人类 + Agent 双轨**：PWA 给人类，MCP 给 Agent，共用同一后端
+- **结构化商品 + agent_summary**：规格 / 物流 / 售后字段拼成一句话决策摘要，Agent 比价无歧义
+- **下单前价格锁定**：`webaz_verify_price` 返回 `session_token`，避免决策与下单之间价格漂移
+- **链上托管（Phase 1 live）**：USDC on Base Sepolia，充值地址按用户派生，自动扫归集 + 自动执行提现
+- **链接认领验证**：卖家关联外部链接需通过众包验证码核验，防止他人冒用商品主权
+- **智能导入**：贴链接，Claude Haiku 自动解析商品字段（10/天免费配额，可 BYO API Key）
+- **自动执法**：状态机责任归因，超时自动判责
+- **争议系统**：双方举证 → 仲裁员裁定 → 败诉方缴 1% 仲裁费（含超时自动判）
+- **声誉 5 级**（新手 → 传奇）：影响质押折扣 + 搜索排名
+- **Skill 市场**：catalog_sync / auto_accept / instant_ship 等插件，Agent 订阅自动享用
 
 ---
 
@@ -66,15 +77,18 @@ npm run pwa
 |------|------|----------|
 | `webaz_info` | 获取协议概览和实时统计 | — |
 | `webaz_register` | 注册账号，获取 api_key | `name`, `role` |
-| `webaz_search` | 搜索商品（按声誉权重排序） | `query`, `category`, `max_price` |
-| `webaz_list_product` | 卖家上架商品 | `title`, `price`, `stock`, `api_key` |
-| `webaz_place_order` | 买家下单 | `product_id`, `shipping_address`, `api_key` |
+| `webaz_search` | 搜索商品（结构化字段 + agent_summary + 声誉加权） | `query`, `category`, `max_price`, `min_return_days`, `max_handling_hours` |
+| `webaz_verify_price` | 下单前锁价 10 分钟，拿到 `session_token` | `product_id`, `quantity`, `api_key` |
+| `webaz_list_product` | 卖家上架商品（含品牌/规格/物流/售后字段） | `title`, `price`, `specs`, `handling_hours`, `return_days`, `api_key` |
+| `webaz_place_order` | 买家下单（可传 `session_token` 防价格漂移） | `product_id`, `shipping_address`, `session_token`, `api_key` |
 | `webaz_update_order` | 更新订单状态（接单/发货/确认/争议） | `order_id`, `action`, `api_key` |
 | `webaz_get_status` | 查询订单/钱包/争议详情 | `order_id` / `wallet` / `dispute_id`, `api_key` |
-| `webaz_wallet` | 查看钱包余额 | `api_key` |
+| `webaz_wallet` | 钱包余额 + 链上充值地址 + 提现 | `action`, `api_key` |
 | `webaz_notifications` | 查询未读通知 | `api_key` |
 | `webaz_dispute` | 争议操作（查看/举证/裁定） | `action`, `api_key` |
 | `webaz_skill` | Skill 市场（发布/订阅） | `action`, `api_key` |
+| `webaz_profile` | 个人资料 + 多角色管理 | `action`, `api_key` |
+| `webaz_mykey` | api_key 恢复（已注册用户重新获取密钥） | `name`, `recovery_code` |
 
 完整协议规范（状态机/经济模型/争议规则）可通过 MCP Resource 读取：
 
@@ -159,23 +173,36 @@ npm run test-manifest# 测试协议 Manifest
 
 ## 当前阶段
 
-**Phase 0 · 概念验证** ✅ 完成
-**Phase 1 · 功能完善** ✅ 完成
+**Phase 0 · 概念验证** ✅
+**Phase 1 · 功能完善 + 链上 testnet 闭环** ✅
+- 14 个 MCP 工具 / 全角色 PWA / 通知 / 争议 / 声誉 / Skill 市场 / Manifest
+- USDC on Base Sepolia：派生充值地址、自动监听入账、热钱包扫归集、自动执行提现
+- 链接认领验证（众包验证码 + 主权流转）
+- Agent 决策三件套（结构化字段 / agent_summary / verify_price 锁价）
+- MCP 工具调用遥测（默认开，可关）
 
-Phase 2 将把核心资金和状态上链，实现真正的去中心化。
+**Phase 2 · 主网 + 真正去中心化**（下一步）
 
 ---
 
 ## 路线图
 
 - [x] 状态机 + 责任归因引擎
-- [x] MCP Server（11 个工具）
+- [x] MCP Server（14 个工具）
 - [x] 通知系统（SSE 实时推送）
 - [x] 争议系统（举证 + 超时自动裁定 + 仲裁费）
-- [x] 声誉积分体系
+- [x] 声誉积分体系（5 级）
 - [x] Skill 市场
 - [x] Protocol Manifest（机器可读协议规范）
 - [x] PWA 前端（全角色覆盖，人类 + Agent 双轨）
-- [ ] 链上集成（Base/Optimism）
+- [x] 智能商品导入（贴链接自动提取）
+- [x] 链接认领验证（卖家主权 + 众包核验）
+- [x] 链上 USDC testnet 闭环（Base Sepolia）
+- [x] 下单前价格锁定（verify_price + session_token）
+- [x] 结构化商品规格 + agent_summary 决策摘要
+- [x] 遥测看板（/api/admin/usage）
+- [ ] 链上 USDC 主网（Base）
 - [ ] IPFS 证据存储
+- [ ] 评价系统（结构化 1-5 星，反哺声誉）
+- [ ] 证据上传通道（争议附图）
 - [ ] 治理 DAO

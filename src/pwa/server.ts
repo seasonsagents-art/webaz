@@ -218,17 +218,20 @@ function extractUrlFromText(text: string | null | undefined): string | null {
   return m?.[0] ?? null
 }
 
+// Agent-first 设计：粘贴外链匹配 **只允许精准匹配**，没有 LIKE 兜底。
+// 模糊匹配与外推荐留给未来独立的"模糊搜索"入口（参见 memory: WebAZ Search Philosophy）。
 function searchByExternalLink(opts: {
   platform?: string | null
   external_id?: string | null
   external_title?: string | null
-}): { matched_by: 'external_id' | 'external_title_exact' | 'external_title_like' | 'none'; products: Record<string, unknown>[] } {
+}): { matched_by: 'external_id' | 'external_title_exact' | 'none'; products: Record<string, unknown>[] } {
   const cols = `p.id, p.title, p.description, p.price, p.stock, p.category, p.seller_id,
     p.specs, p.brand, p.model, p.handling_hours, p.return_days, p.warranty_days, p.ship_regions, p.fragile,
     p.estimated_days, p.return_condition, p.created_at, u.name as seller_name,
     pel.platform as link_platform, pel.external_id as link_external_id, pel.external_title as link_external_title, pel.url as link_url`
   const verifiedPredicate = `pel.verified = 1 AND (pel.revoked IS NULL OR pel.revoked = 0)`
 
+  // Level 1: (platform, external_id) 完全相等
   if (opts.platform && opts.external_id) {
     const rows = db.prepare(`
       SELECT DISTINCT ${cols} FROM products p
@@ -240,6 +243,7 @@ function searchByExternalLink(opts: {
     if (rows.length) return { matched_by: 'external_id', products: rows }
   }
 
+  // Level 2: external_title 完全字符串相等（注意：不做 trim 之外的处理）
   if (opts.external_title) {
     const exact = db.prepare(`
       SELECT DISTINCT ${cols} FROM products p
@@ -249,20 +253,17 @@ function searchByExternalLink(opts: {
       LIMIT 20
     `).all(opts.external_title) as Record<string, unknown>[]
     if (exact.length) return { matched_by: 'external_title_exact', products: exact }
-
-    if (opts.external_title.length >= 5) {
-      const fuzzy = db.prepare(`
-        SELECT DISTINCT ${cols} FROM products p
-        JOIN users u ON p.seller_id = u.id
-        JOIN product_external_links pel ON pel.product_id = p.id
-        WHERE pel.external_title LIKE ? AND ${verifiedPredicate} AND p.status = 'active'
-        LIMIT 20
-      `).all(`%${opts.external_title}%`) as Record<string, unknown>[]
-      if (fuzzy.length) return { matched_by: 'external_title_like', products: fuzzy }
-    }
   }
 
   return { matched_by: 'none', products: [] }
+}
+
+// 口令格式检测（仅用于给用户友好提示，不做模糊匹配尝试）
+function detectShareCommandFormat(text: string): { platform: string; hint: string } | null {
+  if (/\$[A-Za-z0-9]{8,}\$/.test(text))         return { platform: 'taobao', hint: '淘口令（淘宝 App 加密分享格式）' }
+  if (/￥[A-Za-z0-9]{8,}￥/.test(text))         return { platform: 'jd/pdd', hint: '京东 / 拼多多口令格式' }
+  if (/^\d\.\d\s+[A-Za-z0-9]{8,}/.test(text.trim())) return { platform: 'xhs', hint: '小红书口令格式' }
+  return null
 }
 db.exec(`
   CREATE TABLE IF NOT EXISTS withdrawal_requests (
@@ -793,25 +794,19 @@ app.post('/api/search-by-link', (req: Request, res: Response) => {
     if (!meta && url) meta = parsePlatformUrl(url)
   }
 
-  let result: { matched_by: string; products: Record<string, unknown>[] } = searchByExternalLink({
+  const result = searchByExternalLink({
     platform:       meta?.platform,
     external_id:    meta?.external_id,
     external_title: title,
   })
 
-  // 兜底：链接和外部标题都没命中 → 用提取到的 title 做 WebAZ 商品名关键词搜
-  if (result.matched_by === 'none' && title) {
-    const fallback = db.prepare(`
-      SELECT p.id, p.title, p.description, p.price, p.stock, p.category, p.seller_id,
-             p.specs, p.brand, p.model, p.handling_hours, p.return_days, p.warranty_days,
-             p.ship_regions, p.fragile, p.estimated_days, p.return_condition, p.created_at,
-             u.name as seller_name
-      FROM products p
-      JOIN users u ON p.seller_id = u.id
-      WHERE p.status = 'active' AND p.title LIKE ?
-      ORDER BY p.created_at DESC LIMIT 20
-    `).all(`%${title}%`) as Record<string, unknown>[]
-    if (fallback.length) result = { matched_by: 'product_title_like', products: fallback }
+  // 精准匹配为零 → 检测是否为不支持的口令格式，给用户明确指引（不做模糊降级）
+  let unsupportedHint: string | null = null
+  if (result.matched_by === 'none' && !url && !title && text) {
+    const cmd = detectShareCommandFormat(text)
+    if (cmd) {
+      unsupportedHint = `检测到 ${cmd.hint}，该格式经平台加密，无法直接解析。请改用包含 https:// 链接或「商品名」的分享文本。`
+    }
   }
 
   res.json({
@@ -821,8 +816,9 @@ app.post('/api/search-by-link', (req: Request, res: Response) => {
       platform:    meta?.platform    ?? null,
       external_id: meta?.external_id ?? null,
     },
-    matched_by: result.matched_by,
-    products:   result.products,
+    matched_by:   result.matched_by,
+    products:     result.products,
+    ...(unsupportedHint ? { unsupported_format: true, hint: unsupportedHint } : {}),
   })
 })
 

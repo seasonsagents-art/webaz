@@ -190,7 +190,16 @@ const TOOLS = [
    - external_title: 用户文本里「」中的商品标题原文
 2) 解析不动时直接把整段文本塞进 paste_text，WebAZ 服务端做轻量解析（仅正则，不出网）
 
-匹配优先级：external_id 精确 → external_title 完全 → external_title 模糊 → WebAZ 商品名兜底。
+匹配规则（强制精准，不做猜测）：
+- Level 1: external_id 完全相等
+- Level 2: external_title 字符串完全相等
+- 都不命中 → matched_by: 'none'，**不做模糊匹配也不做关键词降级**
+
+重要：matched_by='none' 是诚实信号，请直接告诉用户"未找到精确匹配的商品"。
+不要自己根据标题去关键词搜（那是另一个独立工具的范畴）。
+不要凭印象推测可能相关的商品。
+WebAZ 的信任前提是 agent 拿到的匹配结果是真精准的，不是"看起来差不多"。
+
 注意：粘贴外链匹配会请求 webaz.xyz（生产数据），不依赖你本地的 webaz.db。`,
     inputSchema: {
       type: 'object',

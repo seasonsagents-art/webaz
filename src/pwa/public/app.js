@@ -513,11 +513,10 @@ window.doSearch = async () => {
     const m   = resp.matched_by
     const ext = resp.extracted || {}
     const plat = ext.platform ? `${ext.platform}` : '外部平台'
-    if (m === 'external_id')          banner = `<div class="alert alert-success" style="margin-bottom:12px">✓ 通过 ${plat} 商品 ID 精确匹配到 ${products.length} 件</div>`
-    else if (m === 'external_title_exact') banner = `<div class="alert alert-success" style="margin-bottom:12px">✓ 通过商品标题完全匹配到 ${products.length} 件（链接形式不同但商品相同）</div>`
-    else if (m === 'external_title_like')  banner = `<div class="alert alert-info" style="margin-bottom:12px">通过商品标题模糊匹配到 ${products.length} 件</div>`
-    else if (m === 'product_title_like')   banner = `<div class="alert alert-info" style="margin-bottom:12px">未找到对应外链商品，已用关键词「${ext.title || ''}」搜索 WebAZ 自有商品</div>`
-    else                                    banner = `<div class="alert" style="margin-bottom:12px">未找到关联商品。可改用商品关键词搜索。</div>`
+    if (m === 'external_id')               banner = `<div class="alert alert-success" style="margin-bottom:12px">✓ 通过 ${plat} 商品 ID 精确匹配到 ${products.length} 件</div>`
+    else if (m === 'external_title_exact') banner = `<div class="alert alert-success" style="margin-bottom:12px">✓ 通过商品标题完全匹配到 ${products.length} 件</div>`
+    else if (resp.unsupported_format)      banner = `<div class="alert alert-warn" style="margin-bottom:12px">⚠️ ${resp.hint}</div>`
+    else                                    banner = `<div class="alert" style="margin-bottom:12px">未找到精确匹配的商品（WebAZ 仅做精准匹配，不做猜测）。请确认分享文本中含 URL 或「商品名」。</div>`
   } else {
     products = await GET(`/products?q=${encodeURIComponent(q)}`)
   }

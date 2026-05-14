@@ -486,7 +486,7 @@ async function renderShop(app) {
     <h1 class="page-title">${t('发现好物')}</h1>
     ${agentBuyBanner}
     <div class="search-bar">
-      <input class="search-input" id="search-inp" placeholder="${t('搜索商品...')}" onkeydown="if(event.key==='Enter')doSearch()">
+      <input class="search-input" id="search-inp" placeholder="${t('搜索 / 粘贴外链或分享文本')}" onkeydown="if(event.key==='Enter')doSearch()">
       <button class="btn btn-primary btn-sm" style="width:auto;padding:10px 16px" onclick="doSearch()">${t('搜')}</button>
     </div>
     <div style="margin-bottom:16px;display:flex;gap:8px;flex-wrap:wrap">
@@ -499,10 +499,31 @@ async function renderShop(app) {
 
 window.doSearch = async () => {
   const q = document.getElementById('search-inp').value.trim()
+  if (!q) return
   document.getElementById('product-list').innerHTML = loading$()
-  const products = await GET(`/products?q=${encodeURIComponent(q)}`)
+
+  // 检测：粘贴的分享文本（含 URL 或【平台】/「商品名」标记）走外链匹配端点
+  const looksLikeShare = /https?:\/\//.test(q) || /[【「]/.test(q)
+  let products = []
+  let banner = ''
+
+  if (looksLikeShare) {
+    const resp = await POST('/search-by-link', { text: q })
+    products = resp.products || []
+    const m   = resp.matched_by
+    const ext = resp.extracted || {}
+    const plat = ext.platform ? `${ext.platform}` : '外部平台'
+    if (m === 'external_id')          banner = `<div class="alert alert-success" style="margin-bottom:12px">✓ 通过 ${plat} 商品 ID 精确匹配到 ${products.length} 件</div>`
+    else if (m === 'external_title_exact') banner = `<div class="alert alert-success" style="margin-bottom:12px">✓ 通过商品标题完全匹配到 ${products.length} 件（链接形式不同但商品相同）</div>`
+    else if (m === 'external_title_like')  banner = `<div class="alert alert-info" style="margin-bottom:12px">通过商品标题模糊匹配到 ${products.length} 件</div>`
+    else if (m === 'product_title_like')   banner = `<div class="alert alert-info" style="margin-bottom:12px">未找到对应外链商品，已用关键词「${ext.title || ''}」搜索 WebAZ 自有商品</div>`
+    else                                    banner = `<div class="alert" style="margin-bottom:12px">未找到关联商品。可改用商品关键词搜索。</div>`
+  } else {
+    products = await GET(`/products?q=${encodeURIComponent(q)}`)
+  }
+
   const grid = products.length === 0
-    ? `<div class="empty"><div class="empty-icon">🔍</div><div class="empty-text">${t('没有找到"')}${q}"</div></div>`
+    ? `<div class="empty"><div class="empty-icon">🔍</div><div class="empty-text">${t('没有找到"')}${q.slice(0, 30)}"</div></div>`
     : `<div class="product-grid">
         ${products.map(p => `
           <div class="product-card" onclick="navigate('#order-product/${p.id}')">
@@ -514,7 +535,7 @@ window.doSearch = async () => {
             </div>
           </div>`).join('')}
        </div>`
-  document.getElementById('product-list').innerHTML = grid
+  document.getElementById('product-list').innerHTML = banner + grid
 }
 
 function getCategoryIcon(cat) {

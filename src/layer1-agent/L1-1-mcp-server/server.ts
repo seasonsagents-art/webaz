@@ -177,18 +177,40 @@ const TOOLS = [
   },
   {
     name: 'webaz_search',
-    description: `搜索 WebAZ中的在售商品。
-无需登录即可搜索，买家或 Agent 可以自由浏览。
-返回匹配的商品列表，包含价格、结构化规格（specs）、物流信息、售后政策、agent_summary。
-agent_summary 是一句话决策摘要，Agent 可直接用于比价决策。`,
+    description: `搜索 WebAZ 中的在售商品。
+无需登录即可搜索。返回结构化规格 + 物流 + 售后 + agent_summary 一句话决策摘要。
+
+【关键词搜索】传 query / category / max_price / min_return_days / max_handling_hours。
+
+【粘贴外链搜索】当用户从淘宝/天猫/京东/拼多多/1688/抖音/小红书复制分享内容（如
+"【淘宝】「商品名」 https://e.tb.cn/xxx 点击链接直接打开"）时，请：
+1) 优先用你自己的 LLM 能力解析出三件套，传 external_link 参数：
+   - platform: 'taobao'|'tmall'|'jd'|'pdd'|'1688'|'douyin'|'xhs'
+   - external_id: 平台商品 canonical ID（短链解析得出就传，解析不出留空）
+   - external_title: 用户文本里「」中的商品标题原文
+2) 解析不动时直接把整段文本塞进 paste_text，WebAZ 服务端做轻量解析（仅正则，不出网）
+
+匹配优先级：external_id 精确 → external_title 完全 → external_title 模糊 → WebAZ 商品名兜底。
+注意：粘贴外链匹配会请求 webaz.xyz（生产数据），不依赖你本地的 webaz.db。`,
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: '搜索关键词（商品名称或描述）' },
-        category: { type: 'string', description: '商品分类过滤（可选）' },
-        max_price: { type: 'number', description: '最高价格过滤（可选）' },
-        min_return_days: { type: 'number', description: '最少退货天数（可选，如 7 表示只看支持7天退货的商品）' },
+        query:              { type: 'string', description: '搜索关键词（商品名称或描述）' },
+        category:           { type: 'string', description: '商品分类过滤（可选）' },
+        max_price:          { type: 'number', description: '最高价格过滤（可选）' },
+        min_return_days:    { type: 'number', description: '最少退货天数（可选，如 7 表示只看支持7天退货的商品）' },
         max_handling_hours: { type: 'number', description: '最长发货时效小时数（可选，如 24 表示只看24h内发货的）' },
+        paste_text:         { type: 'string', description: '用户粘贴的分享文本/外链原文（可选，服务端做轻量解析）' },
+        external_link: {
+          type: 'object',
+          description: '外链结构化匹配（可选，由 agent 解析得到）',
+          properties: {
+            platform:       { type: 'string', description: "'taobao'|'tmall'|'jd'|'pdd'|'1688'|'douyin'|'xhs'" },
+            external_id:    { type: 'string', description: '平台商品 canonical ID（可选）' },
+            external_title: { type: 'string', description: '平台商品标题全文（可选）' },
+            canonical_url:  { type: 'string', description: '规范 URL（可选）' },
+          },
+        },
         limit: { type: 'number', description: '返回数量上限，默认 10' },
       },
     },
@@ -579,7 +601,39 @@ function parseProductForAgent(p: Record<string, unknown>) {
   return { ...p, specs, estimated_days, agent_summary: buildAgentSummary(p) }
 }
 
-function handleSearch(args: Record<string, unknown>) {
+async function handleSearch(args: Record<string, unknown>) {
+  // 外链/粘贴文本模式 → relay 到 webaz.xyz/api/search-by-link（生产数据有索引）
+  if (args.paste_text || args.external_link) {
+    const apiUrl = process.env.WEBAZ_API_URL ?? 'https://webaz.xyz'
+    const body: Record<string, unknown> = {}
+    if (args.paste_text)    body.text          = args.paste_text
+    if (args.external_link) body.external_link = args.external_link
+    try {
+      const resp = await fetch(`${apiUrl}/api/search-by-link`, {
+        method:  'POST',
+        headers: { 'content-type': 'application/json' },
+        body:    JSON.stringify(body),
+        signal:  AbortSignal.timeout(5000),
+      })
+      if (!resp.ok) return { error: `链接搜索失败：HTTP ${resp.status}` }
+      const data = (await resp.json()) as {
+        matched_by: string
+        products: Record<string, unknown>[]
+        extracted: Record<string, unknown>
+        error?: string
+      }
+      if (data.error) return data
+      return {
+        ...data,
+        hint: data.products?.length
+          ? `通过 ${data.matched_by} 匹配到 ${data.products.length} 件商品。下单前用 webaz_verify_price 锁价。`
+          : '未找到关联商品。可改用 query 参数做关键词搜索。',
+      }
+    } catch (e) {
+      return { error: `链接搜索网络错误：${(e as Error).message}` }
+    }
+  }
+
   const query = (args.query as string) ?? ''
   const category = args.category as string | undefined
   const maxPrice = args.max_price as number | undefined
@@ -1518,7 +1572,7 @@ export async function startMCPServer() {
       switch (name) {
         case 'webaz_info':          result = handleInfo(); break
         case 'webaz_register':      result = handleRegister(args); break
-        case 'webaz_search':        result = handleSearch(args); break
+        case 'webaz_search':        result = await handleSearch(args); break
         case 'webaz_verify_price':  result = handleVerifyPrice(args); break
         case 'webaz_list_product':  result = handleListProduct(args); break
         case 'webaz_place_order':   result = handlePlaceOrder(args); break

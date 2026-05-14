@@ -763,6 +763,69 @@ app.post('/api/products', (req, res) => {
   })
 })
 
+// 买家粘贴外链/分享文本搜索
+// 两种模式：(1) text=完整粘贴文本，服务端做轻量解析  (2) external_link={platform,external_id,external_title}，agent 已解析好
+app.post('/api/search-by-link', (req: Request, res: Response) => {
+  const text = (req.body?.text || '').toString()
+  const ext  = (req.body?.external_link ?? null) as
+    | { platform?: string; external_id?: string; external_title?: string; canonical_url?: string }
+    | null
+
+  if (!text && !ext) {
+    return void res.json({ error: '请提供 text 或 external_link' })
+  }
+  if (text && text.length > 2000) {
+    return void res.json({ error: '文本过长（>2000）' })
+  }
+
+  let url: string | null = null
+  let title: string | null = null
+  let meta: { platform: string; external_id: string | null } | null = null
+
+  if (ext && typeof ext === 'object') {
+    if (ext.platform)       meta  = { platform: ext.platform, external_id: ext.external_id ?? null }
+    if (ext.external_title) title = ext.external_title
+    if (ext.canonical_url)  url   = ext.canonical_url
+  }
+  if (text) {
+    if (!url)   url   = extractUrlFromText(text)
+    if (!title) title = extractTitleFromText(text)
+    if (!meta && url) meta = parsePlatformUrl(url)
+  }
+
+  let result: { matched_by: string; products: Record<string, unknown>[] } = searchByExternalLink({
+    platform:       meta?.platform,
+    external_id:    meta?.external_id,
+    external_title: title,
+  })
+
+  // 兜底：链接和外部标题都没命中 → 用提取到的 title 做 WebAZ 商品名关键词搜
+  if (result.matched_by === 'none' && title) {
+    const fallback = db.prepare(`
+      SELECT p.id, p.title, p.description, p.price, p.stock, p.category, p.seller_id,
+             p.specs, p.brand, p.model, p.handling_hours, p.return_days, p.warranty_days,
+             p.ship_regions, p.fragile, p.estimated_days, p.return_condition, p.created_at,
+             u.name as seller_name
+      FROM products p
+      JOIN users u ON p.seller_id = u.id
+      WHERE p.status = 'active' AND p.title LIKE ?
+      ORDER BY p.created_at DESC LIMIT 20
+    `).all(`%${title}%`) as Record<string, unknown>[]
+    if (fallback.length) result = { matched_by: 'product_title_like', products: fallback }
+  }
+
+  res.json({
+    extracted: {
+      url,
+      title,
+      platform:    meta?.platform    ?? null,
+      external_id: meta?.external_id ?? null,
+    },
+    matched_by: result.matched_by,
+    products:   result.products,
+  })
+})
+
 // 链接认领状态查询（上架前检查，无需商品 ID）
 app.get('/api/check-url', (req, res) => {
   const user = auth(req, res); if (!user) return

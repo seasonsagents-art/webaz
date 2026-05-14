@@ -1547,7 +1547,7 @@ async function renderSeller(app) {
           <div style="font-size:12px;color:#9ca3af;margin-bottom:6px">${t('买家粘贴这些链接时，智能下单会直接匹配到你的商品')}</div>
           <div id="lnk-list-${p.id}">${loading$()}</div>
           <div style="display:flex;gap:6px;margin-top:8px">
-            <input class="form-control" id="lnk-inp-${p.id}" placeholder="${t('粘贴外部链接（需验证）')}" style="font-size:12px;flex:1">
+            <input class="form-control" id="lnk-inp-${p.id}" placeholder="${t('粘贴外链 / 分享文本（含「」标题更精准）')}" style="font-size:12px;flex:1">
             <button class="btn btn-outline btn-sm" style="width:auto" onclick="doAddLink('${p.id}')">${t('添加')}</button>
           </div>
           <div id="lnk-msg-${p.id}"></div>
@@ -2022,7 +2022,10 @@ async function refreshLinks(productId) {
     <div style="display:flex;align-items:flex-start;gap:6px;margin-bottom:6px;font-size:12px">
       <span style="margin-top:1px">${lk.verified ? '✅' : '⏳'}</span>
       <div style="flex:1;min-width:0">
-        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#374151">${lk.url}</div>
+        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#374151">
+          ${lk.platform ? `<span style="background:#eef2ff;color:#4338ca;padding:1px 6px;border-radius:4px;font-size:10px;margin-right:4px">${lk.platform}</span>` : ''}${lk.url}
+        </div>
+        ${lk.external_title ? `<div style="color:#374151;margin-top:2px">📛 「${lk.external_title}」</div>` : ''}
         ${lk.verify_note ? `<div style="color:#9ca3af">${lk.verify_note}</div>` : ''}
         <div style="color:#9ca3af">${lk.source === 'import' ? t('导入时自动保存') : t('手动添加')}</div>
       </div>
@@ -2033,17 +2036,19 @@ async function refreshLinks(productId) {
 window.doAddLink = async (productId) => {
   const inp = document.getElementById(`lnk-inp-${productId}`)
   const msg = document.getElementById(`lnk-msg-${productId}`)
-  const url = inp.value.trim()
-  if (!url) return
+  const text = inp.value.trim()
+  if (!text) return
   msg.innerHTML = `<div style="font-size:12px;color:#6b7280">${t('提交中...')}</div>`
   inp.disabled = true
-  const res = await POST(`/products/${productId}/links`, { url })
+  // 后端会从 text 自动同时抽 url + external_title（来自「」）
+  const res = await POST(`/products/${productId}/links`, { text })
   inp.disabled = false
   if (res.error) { msg.innerHTML = alert$('error', res.error); return }
   inp.value = ''
+  const extTitleHint = res.external_title ? `<div style="font-size:11px;color:#6b7280">${t('已保存外部标题')}: 「${res.external_title}」</div>` : ''
   msg.innerHTML = res.verified
-    ? `<div style="font-size:12px;color:#16a34a">✅ ${t('链接已关联')}</div>`
-    : linkTaskCard(res)
+    ? `<div style="font-size:12px;color:#16a34a">✅ ${t('链接已关联')}</div>${extTitleHint}`
+    : linkTaskCard(res) + extTitleHint
   const listEl = document.getElementById(`lnk-list-${productId}`)
   if (listEl) { listEl.dataset.loaded = ''; await refreshLinks(productId) }
 }
@@ -2199,7 +2204,10 @@ async function renderEditProduct(app, productId) {
               <div style="display:flex;align-items:flex-start;gap:6px">
                 <span style="flex-shrink:0">${isRevoked ? '❌' : lk.verified ? '✅' : '⏳'}</span>
                 <div style="flex:1;min-width:0">
-                  <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${isRevoked ? '#9ca3af' : '#374151'};${isRevoked ? 'text-decoration:line-through' : ''}">${lk.url}</div>
+                  <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${isRevoked ? '#9ca3af' : '#374151'};${isRevoked ? 'text-decoration:line-through' : ''}">
+                    ${lk.platform ? `<span style="background:#eef2ff;color:#4338ca;padding:1px 6px;border-radius:4px;font-size:10px;margin-right:4px">${lk.platform}</span>` : ''}${lk.url}
+                  </div>
+                  ${lk.external_title ? `<div style="color:#374151;margin-top:2px;font-size:12px">📛 「${lk.external_title}」</div>` : ''}
                   <div style="color:#9ca3af;margin-top:2px">${lk.source === 'import' ? t('导入来源') : lk.source === 'claim' ? t('认领验证') : t('手动添加')} · ${isRevoked ? '<span style="color:#ef4444">主权失效</span>' : lk.verified ? '✓ ' + t('已验证') : t('待验证')}</div>
                 </div>
                 <button onclick="doDeleteLinkEdit('${productId}','${lk.id}')" style="background:none;border:none;color:#dc2626;cursor:pointer;font-size:14px;padding:0;flex-shrink:0">×</button>
@@ -2223,7 +2231,7 @@ async function renderEditProduct(app, productId) {
             </div>`}).join('')}
       </div>
       <div style="display:flex;gap:6px;margin-top:10px">
-        <input class="form-control" id="ep-lnk-inp" placeholder="${t('粘贴站外链接（需众包验证）')}" style="font-size:12px;flex:1" onkeydown="if(event.key==='Enter')doAddLinkEdit('${productId}')">
+        <input class="form-control" id="ep-lnk-inp" placeholder="${t('粘贴外链 / 分享文本（含「」标题更精准）')}" style="font-size:12px;flex:1" onkeydown="if(event.key==='Enter')doAddLinkEdit('${productId}')">
         <button class="btn btn-outline btn-sm" style="flex-shrink:0;width:auto" onclick="doAddLinkEdit('${productId}')">${t('添加')}</button>
       </div>
       <div id="ep-lnk-msg"></div>
@@ -2266,17 +2274,19 @@ window.doUpdateProduct = async (productId) => {
 window.doAddLinkEdit = async (productId) => {
   const inp = document.getElementById('ep-lnk-inp')
   const msg = document.getElementById('ep-lnk-msg')
-  const url = inp.value.trim()
-  if (!url) return
+  const text = inp.value.trim()
+  if (!text) return
   msg.innerHTML = `<div style="font-size:12px;color:#6b7280">${t('提交中...')}</div>`
   inp.disabled = true
-  const res = await POST(`/products/${productId}/links`, { url })
+  // 后端从 text 同时抽 url + external_title（来自「」）
+  const res = await POST(`/products/${productId}/links`, { text })
   inp.disabled = false
   if (res.error) { msg.innerHTML = alert$('error', res.error); return }
   inp.value = ''
+  const extTitleHint = res.external_title ? `<div style="font-size:11px;color:#6b7280">${t('已保存外部标题')}: 「${res.external_title}」</div>` : ''
   msg.innerHTML = res.verified
-    ? `<div style="font-size:12px;color:#16a34a">✅ ${t('链接已关联')}</div>`
-    : linkTaskCard(res)
+    ? `<div style="font-size:12px;color:#16a34a">✅ ${t('链接已关联')}</div>${extTitleHint}`
+    : linkTaskCard(res) + extTitleHint
   renderEditProduct(document.getElementById('app'), productId)
 }
 

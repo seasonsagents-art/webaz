@@ -861,7 +861,7 @@ app.get('/api/products/:id/links', (req, res) => {
   const product = db.prepare('SELECT seller_id FROM products WHERE id = ?').get(req.params.id) as { seller_id: string } | undefined
   if (!product) return void res.status(404).json({ error: '商品不存在' })
   if (product.seller_id !== user.id) return void res.status(403).json({ error: '无权限' })
-  const links = db.prepare(`SELECT id, url, source, verified, revoked, verify_note, added_at FROM product_external_links WHERE product_id = ? ORDER BY added_at ASC`).all(req.params.id)
+  const links = db.prepare(`SELECT id, url, source, verified, revoked, verify_note, added_at, platform, external_id, external_title FROM product_external_links WHERE product_id = ? ORDER BY added_at ASC`).all(req.params.id)
   res.json(links)
 })
 
@@ -872,8 +872,20 @@ app.post('/api/products/:id/links', (req: Request, res: Response) => {
   const product = db.prepare('SELECT * FROM products WHERE id = ? AND seller_id = ?').get(req.params.id, user.id) as Record<string, unknown> | undefined
   if (!product) return void res.status(404).json({ error: '商品不存在或无权限' })
 
-  const { url } = req.body
-  if (!url || !url.startsWith('http')) return void res.json({ error: '请提供有效链接' })
+  // 支持两种 body：(a) {url, external_title?}  (b) {text} — 后者服务端从分享文本中同时抽 url + external_title
+  const rawText: string | undefined = req.body?.text
+  let url: string | undefined = req.body?.url
+  let bodyExternalTitle: string | undefined = req.body?.external_title
+
+  if (!url && rawText) {
+    url = extractUrlFromText(rawText) ?? undefined
+    if (!bodyExternalTitle) bodyExternalTitle = extractTitleFromText(rawText) ?? undefined
+  }
+
+  if (!url || !url.startsWith('http')) return void res.json({ error: '请提供有效链接（URL 或包含 URL 的分享文本）' })
+
+  // 优先用传入的 external_title，否则兜底为商品自己的 title
+  const linkExternalTitle = (bodyExternalTitle && bodyExternalTitle.trim()) || String(product.title ?? '')
 
   // 已关联此商品
   const existing = db.prepare('SELECT id, verified, revoked FROM product_external_links WHERE product_id = ? AND url = ?')
@@ -909,10 +921,10 @@ app.post('/api/products/:id/links', (req: Request, res: Response) => {
     const linkId = generateId('lnk')
     const meta = parsePlatformUrl(url)
     db.prepare(`INSERT INTO product_external_links
-      (id, product_id, url, source, verified, verified_at, platform, external_id)
-      VALUES (?, ?, ?, 'manual', 1, datetime('now'), ?, ?)`).run(
-        linkId, req.params.id, url, meta?.platform ?? null, meta?.external_id ?? null)
-    return void res.json({ link_id: linkId, verified: 1, message: '链接已关联' })
+      (id, product_id, url, source, verified, verified_at, platform, external_id, external_title)
+      VALUES (?, ?, ?, 'manual', 1, datetime('now'), ?, ?, ?)`).run(
+        linkId, req.params.id, url, meta?.platform ?? null, meta?.external_id ?? null, linkExternalTitle)
+    return void res.json({ link_id: linkId, verified: 1, external_title: linkExternalTitle, message: '链接已关联' })
   }
 
   // ── 已被他人认领：发起众包验证任务 ───────────────────────────
@@ -950,9 +962,9 @@ app.post('/api/products/:id/links', (req: Request, res: Response) => {
 
   const claimMeta = parsePlatformUrl(url)
   db.prepare(`INSERT INTO product_external_links
-    (id, product_id, url, source, verified, verify_note, platform, external_id)
-    VALUES (?, ?, ?, 'manual', 0, '认领验证进行中', ?, ?)`).run(
-      linkId, req.params.id, url, claimMeta?.platform ?? null, claimMeta?.external_id ?? null)
+    (id, product_id, url, source, verified, verify_note, platform, external_id, external_title)
+    VALUES (?, ?, ?, 'manual', 0, '认领验证进行中', ?, ?, ?)`).run(
+      linkId, req.params.id, url, claimMeta?.platform ?? null, claimMeta?.external_id ?? null, linkExternalTitle)
 
   db.prepare(`INSERT INTO verify_tasks (id, type, product_id, url, code, verifiers_needed, reward_per_verifier, fee_locked, status, expires_at)
     VALUES (?,?,?,?,?,?,?,?,'code_issued',?)`).run(taskId, 'claim', req.params.id, url, code, VERIFIERS_NEEDED, REWARD_EACH, feeLocked, expiresAt)

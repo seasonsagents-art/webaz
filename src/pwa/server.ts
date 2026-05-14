@@ -161,6 +161,109 @@ function makeDescriptionHash(p: Record<string, unknown>) {
 function makePriceHash(price: number, ts: string) {
   return md5(JSON.stringify({ price, created_at: ts }))
 }
+
+// ─── 外部链接解析（用于买家粘贴搜索） ────────────────────────────
+// 服务器只做正则 / URL 解析，不做 HTTP 出网（避开反爬 + 0 等待）。
+// 短链（e.tb.cn / 3.cn / 拼多多 ps=）能识别 platform 但拿不到 external_id —— 落到 external_title 兜底。
+function parsePlatformUrl(rawUrl: string | null | undefined): { platform: string; external_id: string | null } | null {
+  if (!rawUrl) return null
+  let u: URL
+  try { u = new URL(rawUrl) } catch { return null }
+  const host = u.hostname.toLowerCase()
+
+  if (host === 'item.taobao.com' || host === 'a.m.taobao.com') {
+    return { platform: 'taobao', external_id: u.searchParams.get('id') }
+  }
+  if (host === 'detail.tmall.com' || host === 'detail.m.tmall.com') {
+    return { platform: 'tmall', external_id: u.searchParams.get('id') }
+  }
+  if (host === 'e.tb.cn' || host === 'm.tb.cn' || host === 's.click.taobao.com') {
+    return { platform: 'taobao', external_id: null }
+  }
+  if (host === 'item.jd.com' || host === 'item.m.jd.com') {
+    const m = u.pathname.match(/\/(\d+)(?:\.html|$)/)
+    return { platform: 'jd', external_id: m ? m[1] : null }
+  }
+  if (host === '3.cn' || host === 'u.jd.com') {
+    return { platform: 'jd', external_id: null }
+  }
+  if (host === 'mobile.yangkeduo.com' || host === 'yangkeduo.com') {
+    return { platform: 'pdd', external_id: u.searchParams.get('goods_id') }
+  }
+  if (host === 'k.pinduoduo.com' || host.endsWith('pinduoduo.com')) {
+    return { platform: 'pdd', external_id: null }
+  }
+  if (host.endsWith('1688.com')) {
+    const m = u.pathname.match(/\/offer\/(\d+)\.html/)
+    return { platform: '1688', external_id: m ? m[1] : null }
+  }
+  if (host.endsWith('douyin.com') || host.endsWith('jinritemai.com') || host.endsWith('zhuwang.cc')) {
+    return { platform: 'douyin', external_id: null }
+  }
+  if (host.endsWith('xiaohongshu.com') || host === 'xhslink.com') {
+    return { platform: 'xhs', external_id: null }
+  }
+  return null
+}
+
+function extractTitleFromText(text: string | null | undefined): string | null {
+  if (!text) return null
+  const m = text.match(/「([^」]+)」/)
+  return m?.[1]?.trim() ?? null
+}
+
+function extractUrlFromText(text: string | null | undefined): string | null {
+  if (!text) return null
+  const m = text.match(/https?:\/\/[^\s「」【】《》<>]+/i)
+  return m?.[0] ?? null
+}
+
+function searchByExternalLink(opts: {
+  platform?: string | null
+  external_id?: string | null
+  external_title?: string | null
+}): { matched_by: 'external_id' | 'external_title_exact' | 'external_title_like' | 'none'; products: Record<string, unknown>[] } {
+  const cols = `p.id, p.title, p.description, p.price, p.stock, p.category, p.seller_id,
+    p.specs, p.brand, p.model, p.handling_hours, p.return_days, p.warranty_days, p.ship_regions, p.fragile,
+    p.estimated_days, p.return_condition, p.created_at, u.name as seller_name,
+    pel.platform as link_platform, pel.external_id as link_external_id, pel.external_title as link_external_title, pel.url as link_url`
+  const verifiedPredicate = `pel.verified = 1 AND (pel.revoked IS NULL OR pel.revoked = 0)`
+
+  if (opts.platform && opts.external_id) {
+    const rows = db.prepare(`
+      SELECT DISTINCT ${cols} FROM products p
+      JOIN users u ON p.seller_id = u.id
+      JOIN product_external_links pel ON pel.product_id = p.id
+      WHERE pel.platform = ? AND pel.external_id = ? AND ${verifiedPredicate} AND p.status = 'active'
+      LIMIT 20
+    `).all(opts.platform, opts.external_id) as Record<string, unknown>[]
+    if (rows.length) return { matched_by: 'external_id', products: rows }
+  }
+
+  if (opts.external_title) {
+    const exact = db.prepare(`
+      SELECT DISTINCT ${cols} FROM products p
+      JOIN users u ON p.seller_id = u.id
+      JOIN product_external_links pel ON pel.product_id = p.id
+      WHERE pel.external_title = ? AND ${verifiedPredicate} AND p.status = 'active'
+      LIMIT 20
+    `).all(opts.external_title) as Record<string, unknown>[]
+    if (exact.length) return { matched_by: 'external_title_exact', products: exact }
+
+    if (opts.external_title.length >= 5) {
+      const fuzzy = db.prepare(`
+        SELECT DISTINCT ${cols} FROM products p
+        JOIN users u ON p.seller_id = u.id
+        JOIN product_external_links pel ON pel.product_id = p.id
+        WHERE pel.external_title LIKE ? AND ${verifiedPredicate} AND p.status = 'active'
+        LIMIT 20
+      `).all(`%${opts.external_title}%`) as Record<string, unknown>[]
+      if (fuzzy.length) return { matched_by: 'external_title_like', products: fuzzy }
+    }
+  }
+
+  return { matched_by: 'none', products: [] }
+}
 db.exec(`
   CREATE TABLE IF NOT EXISTS withdrawal_requests (
     id          TEXT PRIMARY KEY,
@@ -216,6 +319,33 @@ db.exec(`
   )
 `)
 try { db.exec('ALTER TABLE product_external_links ADD COLUMN revoked INTEGER DEFAULT 0') } catch {}
+// 平台 / 外部 ID / 外部全标题（用于买家粘贴外链搜索）
+try { db.exec('ALTER TABLE product_external_links ADD COLUMN platform TEXT') } catch {}
+try { db.exec('ALTER TABLE product_external_links ADD COLUMN external_id TEXT') } catch {}
+try { db.exec('ALTER TABLE product_external_links ADD COLUMN external_title TEXT') } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_pel_platform_ext ON product_external_links(platform, external_id)') } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_pel_ext_title    ON product_external_links(external_title)') } catch {}
+
+// 回填：旧 product_external_links 行用 parsePlatformUrl 补 platform/external_id；external_title 暂用商品 title
+;(() => {
+  try {
+    const stale = db.prepare(`
+      SELECT pel.id, pel.url, p.title as product_title
+      FROM product_external_links pel
+      JOIN products p ON pel.product_id = p.id
+      WHERE pel.platform IS NULL OR pel.external_title IS NULL
+      LIMIT 500
+    `).all() as { id: string; url: string; product_title: string }[]
+    const upd = db.prepare(`UPDATE product_external_links SET platform = ?, external_id = ?, external_title = COALESCE(external_title, ?) WHERE id = ?`)
+    let n = 0
+    for (const r of stale) {
+      const meta = parsePlatformUrl(r.url)
+      upd.run(meta?.platform ?? null, meta?.external_id ?? null, r.product_title, r.id)
+      n++
+    }
+    if (n) console.log(`[WebAZ] backfilled ${n} product_external_links rows with platform/external_id/external_title`)
+  } catch (e) { console.error('[backfill failed]', (e as Error).message) }
+})()
 // link_challenges 保留用于向后兼容，新流程用 verify_tasks
 db.exec(`
   CREATE TABLE IF NOT EXISTS link_challenges (
@@ -475,11 +605,15 @@ app.post('/api/products', (req, res) => {
 
   const {
     title, description, price, stock = 1, category = '',
-    specs, brand, model, source_url, source_price,
+    specs, brand, model, source_url, source_price, external_title,
     weight_kg, ship_regions = '全国', handling_hours = 24,
     estimated_days, fragile = 0,
     return_days = 7, return_condition = '', warranty_days = 0,
   } = req.body
+  const sourceMeta = parsePlatformUrl(source_url)
+  const externalTitleVal: string = (typeof external_title === 'string' && external_title.trim())
+    ? external_title.trim()
+    : String(title ?? '')
   if (!title || !description || !price) return void res.json({ error: '请填写商品名、描述、价格' })
 
   // ── 上架前检查：同一卖家不能重复关联相同外部链接 ──────────────
@@ -539,8 +673,11 @@ app.post('/api/products', (req, res) => {
 
     if (otherClaim) {
       // 插入为未验证状态
-      db.prepare(`INSERT OR IGNORE INTO product_external_links (id, product_id, url, source, verified, verify_note)
-        VALUES (?, ?, ?, 'import', 0, '链接冲突：等待众包验证确认归属')`).run(generateId('lnk'), id, source_url)
+      db.prepare(`INSERT OR IGNORE INTO product_external_links
+        (id, product_id, url, source, verified, verify_note, platform, external_id, external_title)
+        VALUES (?, ?, ?, 'import', 0, '链接冲突：等待众包验证确认归属', ?, ?, ?)`).run(
+          generateId('lnk'), id, source_url,
+          sourceMeta?.platform ?? null, sourceMeta?.external_id ?? null, externalTitleVal)
 
       // 创建认领验证任务（扣锁定费）
       const VERIFIERS_NEEDED = 1
@@ -570,8 +707,11 @@ app.post('/api/products', (req, res) => {
       db.prepare(`UPDATE products SET status='warehouse', updated_at=datetime('now') WHERE id=?`).run(id)
     } else {
       // 无冲突 — 直接标记 verified=1
-      db.prepare(`INSERT OR IGNORE INTO product_external_links (id, product_id, url, source, verified, verified_at)
-        VALUES (?, ?, ?, 'import', 1, datetime('now'))`).run(generateId('lnk'), id, source_url)
+      db.prepare(`INSERT OR IGNORE INTO product_external_links
+        (id, product_id, url, source, verified, verified_at, platform, external_id, external_title)
+        VALUES (?, ?, ?, 'import', 1, datetime('now'), ?, ?, ?)`).run(
+          generateId('lnk'), id, source_url,
+          sourceMeta?.platform ?? null, sourceMeta?.external_id ?? null, externalTitleVal)
     }
   }
 
@@ -605,8 +745,11 @@ app.post('/api/products', (req, res) => {
       }
       // 无冲突 — 直接关联 verified=1
       try {
-        db.prepare(`INSERT OR IGNORE INTO product_external_links (id, product_id, url, source, verified, verified_at)
-          VALUES (?, ?, ?, 'import_extra', 1, datetime('now'))`).run(generateId('lnk'), id, extraUrl)
+        const extraMeta = parsePlatformUrl(extraUrl)
+        db.prepare(`INSERT OR IGNORE INTO product_external_links
+          (id, product_id, url, source, verified, verified_at, platform, external_id)
+          VALUES (?, ?, ?, 'import_extra', 1, datetime('now'), ?, ?)`).run(
+            generateId('lnk'), id, extraUrl, extraMeta?.platform ?? null, extraMeta?.external_id ?? null)
       } catch {}
     }
   }
@@ -701,8 +844,11 @@ app.post('/api/products/:id/links', (req: Request, res: Response) => {
   if (!otherClaim) {
     // ── 新链接，无冲突：直接关联 verified=1 ──────────────────────
     const linkId = generateId('lnk')
-    db.prepare(`INSERT INTO product_external_links (id, product_id, url, source, verified, verified_at)
-      VALUES (?, ?, ?, 'manual', 1, datetime('now'))`).run(linkId, req.params.id, url)
+    const meta = parsePlatformUrl(url)
+    db.prepare(`INSERT INTO product_external_links
+      (id, product_id, url, source, verified, verified_at, platform, external_id)
+      VALUES (?, ?, ?, 'manual', 1, datetime('now'), ?, ?)`).run(
+        linkId, req.params.id, url, meta?.platform ?? null, meta?.external_id ?? null)
     return void res.json({ link_id: linkId, verified: 1, message: '链接已关联' })
   }
 
@@ -739,8 +885,11 @@ app.post('/api/products/:id/links', (req: Request, res: Response) => {
   const taskId    = generateId('vtk')
   const expiresAt = new Date(Date.now() + 72 * 3600_000).toISOString()
 
-  db.prepare(`INSERT INTO product_external_links (id, product_id, url, source, verified, verify_note)
-    VALUES (?, ?, ?, 'manual', 0, '认领验证进行中')`).run(linkId, req.params.id, url)
+  const claimMeta = parsePlatformUrl(url)
+  db.prepare(`INSERT INTO product_external_links
+    (id, product_id, url, source, verified, verify_note, platform, external_id)
+    VALUES (?, ?, ?, 'manual', 0, '认领验证进行中', ?, ?)`).run(
+      linkId, req.params.id, url, claimMeta?.platform ?? null, claimMeta?.external_id ?? null)
 
   db.prepare(`INSERT INTO verify_tasks (id, type, product_id, url, code, verifiers_needed, reward_per_verifier, fee_locked, status, expires_at)
     VALUES (?,?,?,?,?,?,?,?,'code_issued',?)`).run(taskId, 'claim', req.params.id, url, code, VERIFIERS_NEEDED, REWARD_EACH, feeLocked, expiresAt)
@@ -1523,8 +1672,11 @@ app.post('/api/claim-url', (req: Request, res: Response) => {
 
   // 插入未验证链接
   const linkId  = generateId('lnk')
-  db.prepare(`INSERT INTO product_external_links (id, product_id, url, source, verified, verify_note)
-    VALUES (?,?,?,'claim',0,'认领验证进行中')`).run(linkId, productId, url)
+  const claimUrlMeta = parsePlatformUrl(url)
+  db.prepare(`INSERT INTO product_external_links
+    (id, product_id, url, source, verified, verify_note, platform, external_id, external_title)
+    VALUES (?,?,?,'claim',0,'认领验证进行中',?,?,?)`).run(
+      linkId, productId, url, claimUrlMeta?.platform ?? null, claimUrlMeta?.external_id ?? null, String(title ?? ''))
 
   // 生成验证码 + 创建众包验证任务
   const chars     = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
